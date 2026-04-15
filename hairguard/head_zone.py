@@ -152,16 +152,16 @@ class HairZone:
         pitch_factor = 1.0 + max(0.0, 0.3 - pitch_ratio) * 1.5
 
         # --- Step 6: Hair zone ellipse ---
-        base_offset = self._head_scale * 0.5
-        pitch_offset_bonus = max(0.0, 0.3 - pitch_ratio) * self._head_scale * 0.3
+        base_offset = self._head_scale * 0.7
+        pitch_offset_bonus = max(0.0, 0.3 - pitch_ratio) * self._head_scale * 0.4
 
         self._hair_center = (
             self._head_center[0] + self._up_vec[0] * (base_offset + pitch_offset_bonus),
             self._head_center[1] + self._up_vec[1] * (base_offset + pitch_offset_bonus),
         )
 
-        self._semi_width = self._head_scale * 0.55   # along head_horizontal
-        self._semi_height = self._head_scale * 0.6 * pitch_factor  # along up_vec
+        self._semi_width = self._head_scale * 1.0    # full head width along ear axis
+        self._semi_height = self._head_scale * 1.2 * pitch_factor  # taller than wide (forehead to nape)
 
     # ------------------------------------------------------------------
     # Public API
@@ -231,3 +231,73 @@ class HairZone:
             cy - self._semi_height,
             cy,
         )
+
+
+class HairZoneSmoother:
+    """Applies temporal EMA smoothing to HairZone parameters across frames.
+
+    Smooths hair_center, semi_width, semi_height, head_horizontal, and up_vec
+    to eliminate per-frame jitter from landmark noise.
+    """
+
+    def __init__(self, alpha: float = 0.3) -> None:
+        self._alpha = alpha
+        self._prev_center: Optional[tuple[float, float]] = None
+        self._prev_sw: Optional[float] = None
+        self._prev_sh: Optional[float] = None
+        self._prev_hh: Optional[tuple[float, float]] = None
+        self._prev_uv: Optional[tuple[float, float]] = None
+
+    def smooth(self, zone: HairZone) -> HairZone:
+        """Apply EMA smoothing to the zone's ellipse parameters in-place."""
+        a = self._alpha
+
+        p = zone.ellipse_params
+        cx, cy = p["center"]
+        sw = p["semi_width"]
+        sh = p["semi_height"]
+        hh = p["head_horizontal"]
+        uv = p["up_vec"]
+
+        if self._prev_center is None:
+            # First frame — no smoothing
+            self._prev_center = (cx, cy)
+            self._prev_sw = sw
+            self._prev_sh = sh
+            self._prev_hh = hh
+            self._prev_uv = uv
+            return zone
+
+        # EMA on scalars and 2D vectors
+        cx = a * cx + (1 - a) * self._prev_center[0]
+        cy = a * cy + (1 - a) * self._prev_center[1]
+        sw = a * sw + (1 - a) * self._prev_sw
+        sh = a * sh + (1 - a) * self._prev_sh
+
+        hh_x = a * hh[0] + (1 - a) * self._prev_hh[0]
+        hh_y = a * hh[1] + (1 - a) * self._prev_hh[1]
+        hh_len = math.sqrt(hh_x * hh_x + hh_y * hh_y)
+        if hh_len > 1e-9:
+            hh = (hh_x / hh_len, hh_y / hh_len)
+
+        uv_x = a * uv[0] + (1 - a) * self._prev_uv[0]
+        uv_y = a * uv[1] + (1 - a) * self._prev_uv[1]
+        uv_len = math.sqrt(uv_x * uv_x + uv_y * uv_y)
+        if uv_len > 1e-9:
+            uv = (uv_x / uv_len, uv_y / uv_len)
+
+        # Update zone internals with smoothed values
+        zone._hair_center = (cx, cy)
+        zone._semi_width = sw
+        zone._semi_height = sh
+        zone._head_horizontal = hh
+        zone._up_vec = uv
+
+        # Store for next frame
+        self._prev_center = (cx, cy)
+        self._prev_sw = sw
+        self._prev_sh = sh
+        self._prev_hh = hh
+        self._prev_uv = uv
+
+        return zone

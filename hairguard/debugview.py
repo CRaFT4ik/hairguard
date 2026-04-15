@@ -37,7 +37,7 @@ from hairguard.hand_detector import (
     THUMB_TIP,
     INDEX_TIP,
 )
-from hairguard.head_zone import HairZone
+from hairguard.head_zone import HairZone, HairZoneSmoother
 
 # ---------------------------------------------------------------------------
 # Color palette (BGR)
@@ -217,11 +217,14 @@ def draw_hair_zone(
     face: FaceResult,
     pose: PoseResult,
     hair_zone_offset: float,
+    smoother: Optional[HairZoneSmoother] = None,
 ) -> None:
     """Visualize the hair zone as a rotated ellipse + forehead polyline."""
     h, w = img.shape[:2]
 
     zone = HairZone(face, pose, hair_zone_offset)
+    if smoother is not None:
+        zone = smoother.smooth(zone)
     params = zone.ellipse_params
 
     cx, cy = params["center"]
@@ -450,6 +453,7 @@ def main(camera: Optional[int] = None) -> None:
     fps_counter = 0
     fps_value   = 0.0
     fps_ts      = time.monotonic()
+    zone_smoother = HairZoneSmoother(alpha=0.3)
 
     # --- CSV recording state ---
     import csv
@@ -512,7 +516,7 @@ def main(camera: Optional[int] = None) -> None:
             # --- Build display frame ---
             display = frame.copy()
 
-            draw_hair_zone(display, face, pose, hair_zone_offset)
+            draw_hair_zone(display, face, pose, hair_zone_offset, zone_smoother)
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, pinch_threshold)
             draw_pinch_indicator(display, hands, pinch_threshold)
@@ -566,11 +570,11 @@ def main(camera: Optional[int] = None) -> None:
                     csv_path = Path.home() / ".hairguard" / f"recording_combing_{int(time.time())}.csv"
                     csv_file = open(csv_path, "w", newline="", encoding="utf-8")
                     fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
-                fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
-                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
-                csv_writer.writeheader()
-                recording_label = "combing"
-                print(f"[debugview] Recording COMBING to {csv_path}")
+                    fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
+                    csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
+                    csv_writer.writeheader()
+                    recording_label = "combing"
+                    print(f"[debugview] Recording COMBING to {csv_path}")
             elif key == ord('s'):
                 # Stop recording
                 if csv_file is not None:

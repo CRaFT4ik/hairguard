@@ -21,7 +21,7 @@ from hairguard.config import Config
 from hairguard.detector import PoseResult
 from hairguard.face_detector import FaceResult
 from hairguard.hand_detector import HandResult, INDEX_TIP, PINKY_TIP
-from hairguard.head_zone import HairZone
+from hairguard.head_zone import HairZone, HairZoneSmoother
 
 
 class _State(Enum):
@@ -85,6 +85,9 @@ class GestureAnalyzer:
         self._rotation_buf: collections.deque = collections.deque(maxlen=self._WINDOW)
         self._last_hand_angle: Optional[float] = None
         self._consecutive_positive: int = 0
+
+        # Temporal smoothing for hair zone
+        self._zone_smoother = HairZoneSmoother(alpha=0.3)
 
         # State machine
         self._state = _State.IDLE
@@ -181,6 +184,7 @@ class GestureAnalyzer:
 
         # Layer 3: Compute hair zone
         zone = HairZone(face_result, pose_result, self._hair_zone_offset)
+        zone = self._zone_smoother.smooth(zone)
 
         # Check each hand
         for hand in hand_results:

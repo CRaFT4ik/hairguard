@@ -592,7 +592,7 @@ def main(camera: Optional[int] = None) -> None:
         cam.release()
         pose_det.close()
         hand_det.close()
-        face_det.close()
+        # face_det removed — no longer used
         hair_seg.close()
         cv2.destroyAllWindows()
         print("[debugview] Closed.")

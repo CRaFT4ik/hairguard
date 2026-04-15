@@ -104,7 +104,7 @@ class HairMask:
         nose_py = int(nose_y * self.height)
 
         # Estimate face size from ears or fallback
-        if ear_left and ear_right:
+        if ear_left is not None and ear_right is not None:
             ear_dist = ((ear_left[0] - ear_right[0]) * self.width) ** 2 + \
                        ((ear_left[1] - ear_right[1]) * self.height) ** 2
             ear_dist = ear_dist ** 0.5

@@ -163,6 +163,13 @@ class HairZone:
         self._semi_width = self._head_scale * 1.0    # full head width along ear axis
         self._semi_height = self._head_scale * 1.2 * pitch_factor  # taller than wide (forehead to nape)
 
+        # Detect head yaw: when ears are foreshortened relative to shoulders,
+        # head is turned sideways. Forehead line becomes unreliable.
+        if self._shoulder_distance > 0.01:
+            self._yaw_ratio = ear_distance / self._shoulder_distance
+        else:
+            self._yaw_ratio = 0.45  # neutral default
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -190,8 +197,10 @@ class HairZone:
         if not in_ellipse:
             return False
 
-        # Optional forehead filter: exclude face area
-        if self._face.detected:
+        # Forehead filter: exclude face area, but only when facing camera.
+        # When head is turned sideways (yaw_ratio < 0.3 = ears foreshortened),
+        # forehead landmarks become unreliable — skip the filter.
+        if self._face.detected and self._yaw_ratio > 0.3:
             if not self._face.is_above_forehead(x, y):
                 return False
 

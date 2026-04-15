@@ -104,7 +104,8 @@ def cmd_stop(_args: argparse.Namespace) -> None:
             result = ctypes.windll.kernel32.TerminateProcess(handle, 0)
             ctypes.windll.kernel32.CloseHandle(handle)
             if not result:
-                print(f"Не удалось завершить процесс {pid}.")
+                print(f"Не удалось завершить процесс {pid}. Удаляю PID-файл.")
+                pid_file.release()
                 return
         else:
             import signal

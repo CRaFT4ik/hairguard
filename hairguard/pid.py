@@ -16,12 +16,18 @@ def _process_is_alive(pid: int) -> bool:
     if sys.platform == "win32":
         try:
             import ctypes
-            SYNCHRONIZE = 0x00100000
-            handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
             if handle == 0:
                 return False
+            # Check if process has exited
+            exit_code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
             ctypes.windll.kernel32.CloseHandle(handle)
-            return True
+            STILL_ACTIVE = 259
+            return exit_code.value == STILL_ACTIVE
         except Exception:
             return False
     else:

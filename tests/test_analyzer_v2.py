@@ -47,8 +47,9 @@ class _FakeConfig:
         ("detection", "trigger_delay_sec"): 0.8,
         ("detection", "dismiss_delay_sec"): 2.5,
         ("detection", "min_confidence"): 0.5,
-        ("detection", "combined_threshold"): 0.55,
-        ("detection", "rotation_threshold"): 0.10,
+        ("detection", "pinch_threshold"): 0.25,
+        ("detection", "spread_threshold"): 0.075,
+        ("detection", "rotation_threshold"): 0.075,
         ("detection", "persist_frames"): 1,  # set to 1 for unit tests (instant detection)
         ("detection", "min_presence_score"): 0.7,
     }

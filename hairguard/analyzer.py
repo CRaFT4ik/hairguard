@@ -43,7 +43,6 @@ class AnalysisResult:
     pinch_ratio_smooth: Optional[float] = None
     spread_index_pinky: Optional[float] = None
     hand_rotation: Optional[float] = None
-    combined_score: Optional[float] = None
     fingertips_in_zone: bool = False
     consecutive_frames: int = 0
 
@@ -74,7 +73,8 @@ class GestureAnalyzer:
         self._min_presence: float = config.get(det, "min_presence_score")
 
         # Data-driven thresholds (from empirical analysis)
-        self._combined_threshold: float = config.get(det, "combined_threshold")
+        self._pinch_threshold: float = config.get(det, "pinch_threshold")
+        self._spread_threshold: float = config.get(det, "spread_threshold")
         self._rotation_threshold: float = config.get(det, "rotation_threshold")
         self._persist_frames: int = int(config.get(det, "persist_frames"))
 
@@ -144,7 +144,6 @@ class GestureAnalyzer:
             pinch_ratio_smooth=detection.get("pinch_smooth"),
             spread_index_pinky=detection.get("spread"),
             hand_rotation=detection.get("rotation"),
-            combined_score=detection.get("combined_score"),
             fingertips_in_zone=detection.get("in_zone", False),
             consecutive_frames=self._consecutive_positive,
         )
@@ -178,6 +177,9 @@ class GestureAnalyzer:
             self._consecutive_positive = 0
             return result
 
+        # Expand hair mask edges slightly for better coverage
+        refined = hair_mask.dilate(12)
+
         # Check each hand
         for hand in hand_results:
             thumb = hand.thumb_tip()
@@ -189,8 +191,8 @@ class GestureAnalyzer:
             if thumb_p < self._min_presence or index_p < self._min_presence:
                 continue
 
-            # Layer 3: Fingertips in hair mask?
-            if not (hair_mask.contains(thumb.x, thumb.y) or hair_mask.contains(index.x, index.y)):
+            # Layer 3: Fingertips in refined hair mask (dilated + face removed)?
+            if not (refined.contains(thumb.x, thumb.y) or refined.contains(index.x, index.y)):
                 continue
             result["in_zone"] = True
 
@@ -226,16 +228,10 @@ class GestureAnalyzer:
             rotation = sum(self._rotation_buf) / len(self._rotation_buf) if self._rotation_buf else 0.0
             result["rotation"] = rotation
 
-            # --- Decision rule: combined score ---
-            # Weighted combination of pinch and spread separates twisting from combing
-            # better than independent thresholds (distributions overlap on each alone).
-            # Score = pinch_smooth * 2 + spread. Lower = more likely twisting.
-            # Typical: twisting ~0.3, combing ~0.8, threshold 0.55
-            combined_score = pinch_smooth * 2 + spread
-            result["combined_score"] = combined_score
-
+            # --- Decision rule (data-driven, 3 independent thresholds) ---
             frame_positive = (
-                combined_score <= self._combined_threshold
+                pinch_smooth <= self._pinch_threshold
+                and spread <= self._spread_threshold
                 and rotation <= self._rotation_threshold
             )
 

@@ -83,6 +83,45 @@ class HairMask:
         """Return raw 2D mask (uint8, non-zero = hair)."""
         return self._mask
 
+    def dilate(self, pixels: int = 10) -> "HairMask":
+        """Expand the hair mask outward by `pixels`. Returns new HairMask."""
+        import cv2
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pixels * 2 + 1, pixels * 2 + 1))
+        dilated = cv2.dilate(self._mask, kernel, iterations=1)
+        return HairMask(mask=dilated, width=self.width, height=self.height)
+
+    def subtract_face(self, nose_x: float, nose_y: float,
+                      ear_left: tuple[float, float] | None = None,
+                      ear_right: tuple[float, float] | None = None) -> "HairMask":
+        """Remove face area from hair mask using pose landmarks.
+
+        Builds an ellipse centered on the nose, sized from ear positions,
+        and zeros out those pixels from the mask.
+        """
+        import cv2
+
+        nose_px = int(nose_x * self.width)
+        nose_py = int(nose_y * self.height)
+
+        # Estimate face size from ears or fallback
+        if ear_left and ear_right:
+            ear_dist = ((ear_left[0] - ear_right[0]) * self.width) ** 2 + \
+                       ((ear_left[1] - ear_right[1]) * self.height) ** 2
+            ear_dist = ear_dist ** 0.5
+            face_w = int(ear_dist * 0.30)  # face width (narrower than ear-to-ear)
+            face_h = int(ear_dist * 0.35)  # face height (nose to chin approx)
+        else:
+            # Rough fallback
+            face_w = int(self.width * 0.08)
+            face_h = int(self.height * 0.10)
+
+        if face_w < 5 or face_h < 5:
+            return self
+
+        result = self._mask.copy()
+        cv2.ellipse(result, (nose_px, nose_py), (face_w, face_h), 0, 0, 360, 0, -1)
+        return HairMask(mask=result, width=self.width, height=self.height)
+
 
 # ---------------------------------------------------------------------------
 # HairSegmenter

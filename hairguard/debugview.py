@@ -217,24 +217,30 @@ def draw_hair_mask(img: np.ndarray, hair_mask: HairMask) -> None:
     if not hair_mask.detected:
         return
 
-    mask = hair_mask.get_mask()  # (H, W) uint8
+    mask = hair_mask.get_mask()
+
+    # Ensure mask is 2D
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+    if mask.ndim != 2:
+        return
 
     # Resize mask to display frame size if needed
     h, w = img.shape[:2]
     if mask.shape[0] != h or mask.shape[1] != w:
         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-    # Build a green-tinted overlay where hair is detected
-    hair_pixels = mask > 0  # (H, W) boolean
-    if hair_pixels.any():
-        overlay = img.copy()
-        # Darken hair pixels and add green tint
-        rows, cols = np.where(hair_pixels)
-        overlay[rows, cols] = (
-            overlay[rows, cols].astype(np.float32) * 0.3
-            + np.array([0, 120, 0], dtype=np.float32)
-        ).clip(0, 255).astype(np.uint8)
-        cv2.addWeighted(overlay, 0.45, img, 0.55, 0, img)
+    # Green-tinted overlay on hair pixels
+    hair_bool = mask.astype(bool)
+    if not hair_bool.any():
+        return
+
+    green_overlay = img.copy()
+    green_overlay[hair_bool] = (
+        green_overlay[hair_bool].astype(np.float32) * 0.3
+        + np.array([0, 120, 0], dtype=np.float32)
+    ).clip(0, 255).astype(np.uint8)
+    cv2.addWeighted(green_overlay, 0.45, img, 0.55, 0, img)
 
 
 # ---------------------------------------------------------------------------

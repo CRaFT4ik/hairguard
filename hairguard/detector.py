@@ -18,6 +18,10 @@ from mediapipe.tasks.python.vision import (
 _KEY_LANDMARKS = {
     "left_wrist": PoseLandmark.LEFT_WRIST,
     "right_wrist": PoseLandmark.RIGHT_WRIST,
+    "left_thumb": PoseLandmark.LEFT_THUMB,
+    "right_thumb": PoseLandmark.RIGHT_THUMB,
+    "left_index": PoseLandmark.LEFT_INDEX,
+    "right_index": PoseLandmark.RIGHT_INDEX,
     "nose": PoseLandmark.NOSE,
     "left_ear": PoseLandmark.LEFT_EAR,
     "right_ear": PoseLandmark.RIGHT_EAR,
@@ -25,9 +29,9 @@ _KEY_LANDMARKS = {
     "right_shoulder": PoseLandmark.RIGHT_SHOULDER,
 }
 
-_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task"
 _MODEL_DIR = Path.home() / ".hairguard" / "models"
-_MODEL_PATH = _MODEL_DIR / "pose_landmarker_lite.task"
+_MODEL_PATH = _MODEL_DIR / "pose_landmarker_full.task"
 
 
 def _ensure_model() -> str:

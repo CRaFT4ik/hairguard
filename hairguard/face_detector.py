@@ -94,6 +94,17 @@ class FaceResult:
                 points.append((lm.x, lm.y))
 
         points.sort(key=lambda p: p[0])
+
+        # Smooth y-values to reduce jagged "lightning" artifacts at side angles.
+        # Simple 3-point moving average on y, keeping x unchanged.
+        if len(points) >= 3:
+            smoothed = [points[0]]
+            for i in range(1, len(points) - 1):
+                avg_y = (points[i - 1][1] + points[i][1] + points[i + 1][1]) / 3.0
+                smoothed.append((points[i][0], avg_y))
+            smoothed.append(points[-1])
+            return smoothed
+
         return points
 
     def forehead_y_at_x(self, x: float) -> Optional[float]:

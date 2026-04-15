@@ -246,15 +246,9 @@ def draw_hair_zone(
         # Outline
         cv2.ellipse(img, center_px, axes_px, angle_deg, 0, 360, COLOR_ORANGE, 2, cv2.LINE_AA)
 
-    # --- Hair center cross ---
+    # --- Hair center cross (same color as ellipse) ---
     cross_size = 8
-    cv2.drawMarker(img, center_px, COLOR_CYAN, cv2.MARKER_CROSS, cross_size, 2)
-
-    # --- Up vector arrow from head center ---
-    hc_px = (int(hc[0] * w), int(hc[1] * h))
-    arrow_len = int(sh * h * 0.5)
-    arrow_end = (hc_px[0] + int(uv[0] * arrow_len), hc_px[1] + int(uv[1] * arrow_len))
-    cv2.arrowedLine(img, hc_px, arrow_end, (0, 255, 255), 2, cv2.LINE_AA, tipLength=0.3)
+    cv2.drawMarker(img, center_px, COLOR_ORANGE, cv2.MARKER_CROSS, cross_size, 2)
 
     # --- Forehead polyline (cyan) ---
     forehead_pts = zone.forehead_line
@@ -464,7 +458,7 @@ def main(camera: Optional[int] = None) -> None:
     recording_label = ""
 
     print("[debugview] Running — press 'q' or ESC to quit, 'c' to cycle cameras.")
-    print("[debugview] Press '1' to record TWISTING, '2' to record COMBING, 's' to stop recording.")
+    print("[debugview] Press '1' to toggle TWISTING recording, '2' to toggle COMBING recording.")
 
     try:
         while True:
@@ -540,24 +534,38 @@ def main(camera: Optional[int] = None) -> None:
             if cv2.getWindowProperty("HairGuard Debug View", cv2.WND_PROP_VISIBLE) < 1:
                 break
             elif key == ord('1'):
-                # Start recording TWISTING
-                if csv_file is not None:
+                if csv_writer is not None and recording_label == "twisting":
+                    # Toggle OFF
                     csv_file.close()
-                csv_path = Path.home() / ".hairguard" / f"recording_twisting_{int(time.time())}.csv"
-                csv_file = open(csv_path, "w", newline="", encoding="utf-8")
-                fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
-                fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
-                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
-                csv_writer.writeheader()
-                recording_label = "twisting"
-                print(f"[debugview] Recording TWISTING to {csv_path}")
+                    csv_file = None
+                    csv_writer = None
+                    print("[debugview] TWISTING recording stopped.")
+                else:
+                    # Toggle ON
+                    if csv_file is not None:
+                        csv_file.close()
+                    csv_path = Path.home() / ".hairguard" / f"recording_twisting_{int(time.time())}.csv"
+                    csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+                    fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
+                    fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
+                    csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
+                    csv_writer.writeheader()
+                    recording_label = "twisting"
+                    print(f"[debugview] Recording TWISTING to {csv_path}")
             elif key == ord('2'):
-                # Start recording COMBING
-                if csv_file is not None:
+                if csv_writer is not None and recording_label == "combing":
+                    # Toggle OFF
                     csv_file.close()
-                csv_path = Path.home() / ".hairguard" / f"recording_combing_{int(time.time())}.csv"
-                csv_file = open(csv_path, "w", newline="", encoding="utf-8")
-                fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
+                    csv_file = None
+                    csv_writer = None
+                    print("[debugview] COMBING recording stopped.")
+                else:
+                    # Toggle ON
+                    if csv_file is not None:
+                        csv_file.close()
+                    csv_path = Path.home() / ".hairguard" / f"recording_combing_{int(time.time())}.csv"
+                    csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+                    fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
                 fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
                 csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
                 csv_writer.writeheader()

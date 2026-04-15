@@ -44,6 +44,7 @@ class AnalysisResult:
     pinch_ratio_smooth: Optional[float] = None
     spread_index_pinky: Optional[float] = None
     hand_rotation: Optional[float] = None
+    combined_score: Optional[float] = None
     fingertips_in_zone: bool = False
     consecutive_frames: int = 0
 
@@ -75,8 +76,7 @@ class GestureAnalyzer:
         self._hair_zone_offset: float = config.get(det, "hair_zone_offset")
 
         # Data-driven thresholds (from empirical analysis)
-        self._pinch_threshold: float = config.get(det, "pinch_threshold")
-        self._spread_threshold: float = config.get(det, "spread_threshold")
+        self._combined_threshold: float = config.get(det, "combined_threshold")
         self._rotation_threshold: float = config.get(det, "rotation_threshold")
         self._persist_frames: int = int(config.get(det, "persist_frames"))
 
@@ -149,6 +149,7 @@ class GestureAnalyzer:
             pinch_ratio_smooth=detection.get("pinch_smooth"),
             spread_index_pinky=detection.get("spread"),
             hand_rotation=detection.get("rotation"),
+            combined_score=detection.get("combined_score"),
             fingertips_in_zone=detection.get("in_zone", False),
             consecutive_frames=self._consecutive_positive,
         )
@@ -234,10 +235,16 @@ class GestureAnalyzer:
             rotation = sum(self._rotation_buf) / len(self._rotation_buf) if self._rotation_buf else 0.0
             result["rotation"] = rotation
 
-            # --- Decision rule (data-driven thresholds) ---
+            # --- Decision rule: combined score ---
+            # Weighted combination of pinch and spread separates twisting from combing
+            # better than independent thresholds (distributions overlap on each alone).
+            # Score = pinch_smooth * 2 + spread. Lower = more likely twisting.
+            # Typical: twisting ~0.3, combing ~0.8, threshold 0.55
+            combined_score = pinch_smooth * 2 + spread
+            result["combined_score"] = combined_score
+
             frame_positive = (
-                pinch_smooth <= self._pinch_threshold
-                and spread <= self._spread_threshold
+                combined_score <= self._combined_threshold
                 and rotation <= self._rotation_threshold
             )
 

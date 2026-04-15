@@ -122,7 +122,7 @@ def draw_hand_skeletons(
     img: np.ndarray,
     hands: list[HandResult],
     result: AnalysisResult,
-    pinch_threshold: float,
+    combined_threshold: float,
 ) -> None:
     """Draw all 21 landmarks + connections for every detected hand."""
     h, w = img.shape[:2]
@@ -179,7 +179,7 @@ def draw_hand_skeletons(
 def draw_pinch_indicator(
     img: np.ndarray,
     hands: list[HandResult],
-    pinch_threshold: float,
+    combined_threshold: float,
 ) -> None:
     """Draw a line between thumb and index tip with the pinch_ratio label."""
     if not hands:
@@ -198,7 +198,7 @@ def draw_pinch_indicator(
         pt_index = _px(i.x, i.y, w, h)
 
         ratio = hand.pinch_ratio()
-        line_color = COLOR_RED if ratio < pinch_threshold else COLOR_GREEN
+        line_color = COLOR_RED if ratio < 0.30 else COLOR_GREEN  # visual indicator only
 
         cv2.line(img, pt_thumb, pt_index, line_color, 1, cv2.LINE_AA)
 
@@ -310,7 +310,7 @@ def draw_status_panel(
     img: np.ndarray,
     result: AnalysisResult,
     fps: float,
-    pinch_threshold: float,
+    combined_threshold: float,
 ) -> None:
     """Render the status panel at the top of the frame."""
     h, w = img.shape[:2]
@@ -373,34 +373,22 @@ def draw_status_panel(
     cv2.putText(img, f"FPS: {fps:.1f}", (col2, y), _FONT, _FONT_MD, COLOR_CYAN, 1, cv2.LINE_AA)
     y += lh
 
-    # Pinch smooth
-    if result.pinch_ratio_smooth is not None:
-        pr_val   = result.pinch_ratio_smooth
-        pr_color = COLOR_RED if pr_val < pinch_threshold else COLOR_GREEN
-        pr_txt   = f"{pr_val:.3f}"
+    # Combined score (pinch*2 + spread)
+    if result.combined_score is not None:
+        cs_val = result.combined_score
+        cs_color = COLOR_RED if cs_val < combined_threshold else COLOR_GREEN
+        cs_txt = f"{cs_val:.3f}"
     else:
-        pr_color = COLOR_GRAY
-        pr_txt   = "N/A"
-    cv2.putText(img, "Pinch(smooth):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, pr_txt, (col2 + 110, y), _FONT, _FONT_MD, pr_color, 1, cv2.LINE_AA)
-    y += lh
-
-    # Spread index-pinky
-    if result.spread_index_pinky is not None:
-        sp_val = result.spread_index_pinky
-        sp_color = COLOR_RED if sp_val < 0.075 else COLOR_GREEN
-        sp_txt = f"{sp_val:.3f}"
-    else:
-        sp_color = COLOR_GRAY
-        sp_txt = "N/A"
-    cv2.putText(img, "Spread(i-p):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, sp_txt, (col2 + 95, y), _FONT, _FONT_MD, sp_color, 1, cv2.LINE_AA)
+        cs_color = COLOR_GRAY
+        cs_txt = "N/A"
+    cv2.putText(img, "Score(p*2+s):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, cs_txt, (col2 + 105, y), _FONT, _FONT_MD, cs_color, 1, cv2.LINE_AA)
     y += lh
 
     # Hand rotation
     if result.hand_rotation is not None:
         rot_val = result.hand_rotation
-        rot_color = COLOR_RED if rot_val < 0.075 else COLOR_GREEN
+        rot_color = COLOR_RED if rot_val < 0.10 else COLOR_GREEN
         rot_txt = f"{rot_val:.3f}"
     else:
         rot_color = COLOR_GRAY
@@ -422,7 +410,7 @@ def draw_status_panel(
 def main(camera: Optional[int] = None) -> None:
     """Open the HairGuard debug view window. Blocks until 'q'/ESC is pressed."""
     config = Config()
-    pinch_threshold: float = config.get("detection", "pinch_threshold")
+    combined_threshold: float = config.get("detection", "combined_threshold") or 0.55
     min_confidence: float  = config.get("detection", "min_confidence")
     hair_zone_offset: float = config.get("detection", "hair_zone_offset")
 
@@ -518,9 +506,9 @@ def main(camera: Optional[int] = None) -> None:
 
             draw_hair_zone(display, face, pose, hair_zone_offset, zone_smoother)
             draw_pose_landmarks(display, pose)
-            draw_hand_skeletons(display, hands, result, pinch_threshold)
-            draw_pinch_indicator(display, hands, pinch_threshold)
-            draw_status_panel(display, result, fps_value, pinch_threshold)
+            draw_hand_skeletons(display, hands, result, combined_threshold)
+            draw_pinch_indicator(display, hands, combined_threshold)
+            draw_status_panel(display, result, fps_value, combined_threshold)
 
             cv2.imshow("HairGuard Debug View", display)
 

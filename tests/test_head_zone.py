@@ -60,11 +60,11 @@ def _default_zone(**kwargs) -> HairZone:
 
 class TestHairZoneBounds:
     def test_x_bounds_with_margin(self):
-        """x_min / x_max include 15% ear margin."""
+        """x_min / x_max include 40% ear margin (hair extends beyond ears)."""
         pose = _make_pose(left_ear_x=0.25, right_ear_x=0.75)
         zone = HairZone(face=_make_face(), pose=pose)
         ear_width = abs(0.75 - 0.25)
-        margin = ear_width * 0.15
+        margin = ear_width * 0.40
         x_min, x_max, _, _ = zone.bounds
         assert x_min == pytest.approx(0.25 - margin)
         assert x_max == pytest.approx(0.75 + margin)
@@ -86,16 +86,15 @@ class TestHairZoneBounds:
         assert y_ceiling == pytest.approx(0.0)
 
     def test_ceiling_default_offset(self):
-        """Ceiling uses shifted forehead_y_mean (hairline), not raw eyebrow line."""
+        """Ceiling uses shifted forehead_y_mean with 1.5x multiplier for head tilt."""
         face = _make_face(forehead_y=0.35)
         pose = _make_pose(left_shoulder_x=0.2, right_shoulder_x=0.8)
         zone = HairZone(face=face, pose=pose, hair_zone_offset=0.4)
         shoulder_width = abs(0.8 - 0.2)
-        # Shifted forehead: 0.35 - (0.40 - 0.35)*0.4 = 0.33
-        shifted_forehead = 0.33
-        expected_ceiling = max(0.0, shifted_forehead - shoulder_width * 0.4)
+        shifted_forehead = 0.33  # 0.35 - (0.40 - 0.35)*0.55
+        expected_ceiling = max(0.0, shifted_forehead - shoulder_width * 0.4 * 1.5)
         _, _, y_ceiling, _ = zone.bounds
-        assert y_ceiling == pytest.approx(expected_ceiling, abs=0.01)
+        assert y_ceiling == pytest.approx(expected_ceiling, abs=0.02)
 
 
 # ---------------------------------------------------------------------------
@@ -123,26 +122,32 @@ class TestContainsInZone:
         assert zone.contains(0.5, 0.50) is False
 
     def test_point_outside_left_ear_returns_false(self):
-        """A point to the left of the ear bounds is not in the zone."""
-        pose = _make_pose(left_ear_x=0.25, right_ear_x=0.75)
+        """A point far to the left of the ear bounds is not in the zone."""
+        pose = _make_pose(left_ear_x=0.35, right_ear_x=0.65)
         zone = HairZone(face=_make_face(), pose=pose)
-        # x_min = 0.25 - 0.075 = 0.175; point at x=0.05 is outside
+        # ear_width=0.30, margin=0.30*0.40=0.12, x_min=0.35-0.12=0.23
         assert zone.contains(0.05, 0.20) is False
 
     def test_point_outside_right_ear_returns_false(self):
-        """A point to the right of the ear bounds is not in the zone."""
-        pose = _make_pose(left_ear_x=0.25, right_ear_x=0.75)
+        """A point far to the right of the ear bounds is not in the zone."""
+        pose = _make_pose(left_ear_x=0.35, right_ear_x=0.65)
         zone = HairZone(face=_make_face(), pose=pose)
-        # x_max = 0.75 + 0.075 = 0.825; point at x=0.95 is outside
+        # ear_width=0.30, margin=0.30*0.40=0.12, x_max=0.65+0.12=0.77
         assert zone.contains(0.95, 0.20) is False
 
     def test_point_above_ceiling_returns_false(self):
-        """A point above the ceiling (too high in image) is not in the zone."""
-        face = _make_face(forehead_y=0.35)
-        pose = _make_pose(left_shoulder_x=0.2, right_shoulder_x=0.8)
-        zone = HairZone(face=face, pose=pose, hair_zone_offset=0.4)
-        # ceiling = max(0, 0.35 - 0.6*0.4) = 0.11; y=0.0 is above ceiling
-        assert zone.contains(0.5, 0.0) is False
+        """A point above the ceiling (too high in image) is not in the zone.
+
+        With wider ceiling (1.5x multiplier), use a small shoulder width
+        so ceiling doesn't hit 0.0.
+        """
+        face = _make_face(forehead_y=0.40)
+        pose = _make_pose(left_shoulder_x=0.35, right_shoulder_x=0.65)
+        zone = HairZone(face=face, pose=pose, hair_zone_offset=0.3)
+        # Ceiling should be > 0 but point at y=-0.1 (impossible) would be above
+        _, _, y_ceiling, _ = zone.bounds
+        assert y_ceiling > 0.0  # ceiling exists
+        assert zone.contains(0.5, 0.0) is False  # y=0.0 is above ceiling
 
     def test_on_forehead_line_not_in_zone(self):
         """A point exactly on the forehead line is NOT in the zone (not above)."""

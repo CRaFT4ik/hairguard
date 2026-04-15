@@ -47,7 +47,8 @@ class HairZone:
         right_ear = lm.get("right_ear")
 
         if left_ear is not None and right_ear is not None:
-            ear_margin = abs(right_ear.x - left_ear.x) * 0.15
+            ear_width = abs(right_ear.x - left_ear.x)
+            ear_margin = ear_width * 0.40  # 40% margin — hair extends well beyond ears
             self._x_min: float = min(left_ear.x, right_ear.x) - ear_margin
             self._x_max: float = max(left_ear.x, right_ear.x) + ear_margin
         else:
@@ -67,7 +68,7 @@ class HairZone:
             shoulder_width = 0.0
 
         self._y_forehead_avg: float = forehead_y_mean
-        self._y_ceiling: float = max(0.0, forehead_y_mean - shoulder_width * self._offset)
+        self._y_ceiling: float = max(0.0, forehead_y_mean - shoulder_width * self._offset * 1.5)
 
     # ------------------------------------------------------------------
     # Internal helpers

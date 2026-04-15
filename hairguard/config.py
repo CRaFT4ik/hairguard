@@ -16,7 +16,7 @@ DEFAULTS: dict[str, Any] = {
         "fps": 10,
         "min_confidence": 0.5,
         "pinch_threshold": 0.40,
-        "spread_threshold": 0.075,
+        "spread_threshold": 0.10,
         "rotation_threshold": 0.10,
         "persist_frames": 5,
         "min_presence_score": 0.7,

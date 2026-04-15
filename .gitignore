@@ -1,4 +1,5 @@
 .superpowers/
+CLAUDE.local.md
 hairguard.egg-info/
 __pycache__/
 *.pyc

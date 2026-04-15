@@ -1,3 +1,5 @@
+🇷🇺 [Русская версия](hair-zone-geometry.ru.md)
+
 # Hair Zone Geometry — Mathematical Model
 
 ## Problem

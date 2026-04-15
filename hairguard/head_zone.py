@@ -197,22 +197,13 @@ class HairZone:
         if not in_ellipse:
             return False
 
-        # Forehead filter: exclude face area.
-        # When head is turned sideways (yaw_ratio < 0.3), forehead landmarks
-        # become unreliable. Apply a relaxed version: allow points slightly
-        # below the forehead line, proportional to how turned the head is.
-        if self._face.detected:
+        # Forehead filter: exclude face area (frontal views only).
+        # When head is turned sideways (yaw_ratio < 0.3), FaceMesh forehead
+        # landmarks are compressed and unreliable — skip filter, rely on ellipse.
+        if self._face.detected and self._yaw_ratio >= 0.3:
             forehead_y = self._face.forehead_y_at_x(x)
-            if forehead_y is not None:
-                # Relax forehead boundary when head is turned
-                if self._yaw_ratio < 0.3:
-                    # Allow points up to 15% of head_scale below forehead
-                    margin = self._head_scale * 0.15
-                    if y > forehead_y + margin:
-                        return False
-                else:
-                    if y > forehead_y:
-                        return False
+            if forehead_y is not None and y > forehead_y:
+                return False
 
         return True
 
@@ -230,14 +221,32 @@ class HairZone:
             "head_horizontal": self._head_horizontal,
             "up_vec": self._up_vec,
             "head_center": self._head_center,
+            "yaw_ratio": self._yaw_ratio,
         }
 
     @property
     def forehead_line(self) -> list[tuple[float, float]]:
-        """Forehead contour points for visualization."""
-        if self._face.detected:
-            return self._face.forehead_line()
-        return []
+        """Forehead contour points for visualization.
+
+        Returns empty list when head is turned sideways (yaw_ratio < 0.3)
+        because FaceMesh forehead landmarks become unreliable and produce
+        a zigzag/accordion artifact.
+        """
+        if not self._face.detected:
+            return []
+        # Skip forehead line when head is turned — landmarks are garbage
+        if self._yaw_ratio < 0.3:
+            return []
+        line = self._face.forehead_line()
+        if not line:
+            return []
+        # Additional check: if the x-spread of the line is too narrow
+        # relative to head_scale, the points are compressed and unreliable
+        xs = [p[0] for p in line]
+        x_spread = max(xs) - min(xs)
+        if x_spread < self._head_scale * 0.15:
+            return []
+        return line
 
     # Keep backward-compatible bounds for status panel
     @property

@@ -108,14 +108,15 @@ class TestEllipseParams:
         mag = math.sqrt(hh[0] ** 2 + hh[1] ** 2)
         assert mag == pytest.approx(1.0, abs=1e-6)
 
-    def test_head_center_is_ear_midpoint(self):
-        """head_center must be the midpoint of the two ears."""
+    def test_head_center_is_nose_position(self):
+        """head_center is anchored on nose (stable under hand occlusion)."""
         pose = _make_pose(left_ear_x=0.25, right_ear_x=0.75,
-                          left_ear_y=0.35, right_ear_y=0.35)
+                          left_ear_y=0.35, right_ear_y=0.35,
+                          nose_x=0.5, nose_y=0.4)
         params = HairZone(face=_make_face(), pose=pose).ellipse_params
         hcx, hcy = params["head_center"]
         assert hcx == pytest.approx(0.5, abs=1e-6)
-        assert hcy == pytest.approx(0.35, abs=1e-6)
+        assert hcy == pytest.approx(0.4, abs=1e-6)  # nose_y, not ear_y
 
 
 # ---------------------------------------------------------------------------

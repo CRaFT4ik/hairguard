@@ -107,11 +107,13 @@ class HairZone:
             ear_distance = 0.0  # signal to use shoulder-based scale
 
         # --- Step 3: Head center and scale ---
-        if ears_ok and ear_distance >= min_ear_dist:
-            self._head_center = _midpoint(left_ear, right_ear)
-        elif nose is not None and nose.confidence >= _CONF_THRESHOLD:
-            # Both ears occluded — use nose as head center
+        # ALWAYS use nose as the anchor for head center — it's stable under
+        # hand occlusion (hands cover ears/sides, not nose).
+        # Ears are used ONLY for orientation (head_horizontal), not position.
+        if nose is not None and nose.confidence >= _CONF_THRESHOLD:
             self._head_center = (nose.x, nose.y)
+        elif ears_ok and ear_distance >= min_ear_dist:
+            self._head_center = _midpoint(left_ear, right_ear)
         else:
             self._head_center = (0.5, 0.4)  # last resort
 
@@ -139,9 +141,11 @@ class HairZone:
         self._up_vec = _normalize(up_candidate)
 
         # --- Step 5: Pitch detection (decomposed) ---
-        if nose is not None and nose.confidence >= _CONF_THRESHOLD:
-            face_vec = (nose.x - self._head_center[0], nose.y - self._head_center[1])
-            # Signed pitch: negative dot with up_vec means nose is above ears (looking at ceiling)
+        # Pitch = how far nose is from ear midpoint along up_vec.
+        # Use ear_midpoint (not head_center, which is now nose-based).
+        if nose is not None and nose.confidence >= _CONF_THRESHOLD and ears_ok and ear_distance >= min_ear_dist:
+            ear_mid = _midpoint(left_ear, right_ear)
+            face_vec = (nose.x - ear_mid[0], nose.y - ear_mid[1])
             pitch_component = -_dot(face_vec, self._up_vec)
             pitch_ratio = pitch_component / self._head_scale if self._head_scale > 1e-6 else 0.3
             pitch_ratio = max(-0.3, min(0.6, pitch_ratio))
@@ -152,7 +156,7 @@ class HairZone:
         pitch_factor = 1.0 + max(0.0, 0.3 - pitch_ratio) * 1.5
 
         # --- Step 6: Hair zone ellipse ---
-        base_offset = self._head_scale * 0.7
+        base_offset = self._head_scale * 0.85  # nose is lower than ear midpoint, so offset is bigger
         pitch_offset_bonus = max(0.0, 0.3 - pitch_ratio) * self._head_scale * 0.4
 
         self._hair_center = (
@@ -285,22 +289,9 @@ class HairZoneSmoother:
             self._prev_hh = hh
             return zone
 
-        # Outlier rejection: if center jumped more than 20% of head_scale
-        # in one frame, it's likely a landmark glitch from hand occlusion.
-        # Reject the new center and keep the previous one.
-        jump_dx = cx - self._prev_center[0]
-        jump_dy = cy - self._prev_center[1]
-        jump_dist = math.sqrt(jump_dx * jump_dx + jump_dy * jump_dy)
-        max_jump = max(self._prev_sw, self._prev_sh) * 0.20  # 20% of stable ellipse size
-
-        if jump_dist > max_jump and max_jump > 0.01:
-            # Outlier — keep previous center, still smooth size/orientation
-            cx = self._prev_center[0]
-            cy = self._prev_center[1]
-        else:
-            # Normal EMA on center
-            cx = a * cx + (1 - a) * self._prev_center[0]
-            cy = a * cy + (1 - a) * self._prev_center[1]
+        # EMA on center (nose-based = stable, no outlier rejection needed)
+        cx = a * cx + (1 - a) * self._prev_center[0]
+        cy = a * cy + (1 - a) * self._prev_center[1]
 
         # EMA on size
         sw = a * sw + (1 - a) * self._prev_sw

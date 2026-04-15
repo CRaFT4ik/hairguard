@@ -357,11 +357,11 @@ def draw_status_panel(
     cv2.putText(img, fiz_txt, (col1 + 150, y), _FONT, _FONT_MD, fiz_color, 1, cv2.LINE_AA)
     y += lh
 
-    # Gripping
-    grip_txt   = "YES" if result.is_gripping else "NO"
-    grip_color = COLOR_YELLOW if result.is_gripping else COLOR_WHITE
-    cv2.putText(img, "Gripping:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, grip_txt, (col1 + 72, y), _FONT, _FONT_MD, grip_color, 1, cv2.LINE_AA)
+    # Consecutive frames
+    cf_txt = str(result.consecutive_frames)
+    cf_color = COLOR_RED if result.consecutive_frames >= 5 else COLOR_WHITE
+    cv2.putText(img, f"Persist: {cf_txt}", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, cf_txt, (col1 + 60, y), _FONT, _FONT_MD, cf_color, 1, cv2.LINE_AA)
 
     # ---- Column 2 ----
     y = 22 + lh + 2
@@ -370,17 +370,40 @@ def draw_status_panel(
     cv2.putText(img, f"FPS: {fps:.1f}", (col2, y), _FONT, _FONT_MD, COLOR_CYAN, 1, cv2.LINE_AA)
     y += lh
 
-    # Pinch ratio
-    if result.pinch_distance is not None:
-        pr_val   = result.pinch_distance
+    # Pinch smooth
+    if result.pinch_ratio_smooth is not None:
+        pr_val   = result.pinch_ratio_smooth
         pr_color = COLOR_RED if pr_val < pinch_threshold else COLOR_GREEN
         pr_txt   = f"{pr_val:.3f}"
     else:
-        pr_val   = None
         pr_color = COLOR_GRAY
         pr_txt   = "N/A"
-    cv2.putText(img, "Pinch ratio:", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, pr_txt, (col2 + 95, y), _FONT, _FONT_MD, pr_color, 1, cv2.LINE_AA)
+    cv2.putText(img, "Pinch(smooth):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, pr_txt, (col2 + 110, y), _FONT, _FONT_MD, pr_color, 1, cv2.LINE_AA)
+    y += lh
+
+    # Spread index-pinky
+    if result.spread_index_pinky is not None:
+        sp_val = result.spread_index_pinky
+        sp_color = COLOR_RED if sp_val < 0.075 else COLOR_GREEN
+        sp_txt = f"{sp_val:.3f}"
+    else:
+        sp_color = COLOR_GRAY
+        sp_txt = "N/A"
+    cv2.putText(img, "Spread(i-p):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, sp_txt, (col2 + 95, y), _FONT, _FONT_MD, sp_color, 1, cv2.LINE_AA)
+    y += lh
+
+    # Hand rotation
+    if result.hand_rotation is not None:
+        rot_val = result.hand_rotation
+        rot_color = COLOR_RED if rot_val < 0.075 else COLOR_GREEN
+        rot_txt = f"{rot_val:.3f}"
+    else:
+        rot_color = COLOR_GRAY
+        rot_txt = "N/A"
+    cv2.putText(img, "Rotation:", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, rot_txt, (col2 + 72, y), _FONT, _FONT_MD, rot_color, 1, cv2.LINE_AA)
     y += lh
 
     # Key hints

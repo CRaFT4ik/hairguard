@@ -1,68 +1,95 @@
-"""hairguard.analyzer — GestureAnalyzer v2.
+"""hairguard.analyzer — GestureAnalyzer v2.1 (data-driven).
 
-7-layer detection pipeline with pinch/grip/zone gating.
+Detection pipeline based on empirical analysis of twisting vs combing data.
+Uses 3 features with sliding windows + persistence filter:
+  1. Smoothed pinch ratio (20-frame rolling mean) — primary signal
+  2. Index-to-pinky spread — finger clustering signal
+  3. Hand rotation rate — static vs sweeping motion
 
 State machine: IDLE -> TRIGGERED -> ALERTING -> COOLDOWN -> IDLE
 """
 from __future__ import annotations
 
+import collections
+import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
 from hairguard.config import Config
 from hairguard.detector import PoseResult
 from hairguard.face_detector import FaceResult
-from hairguard.hand_detector import HandResult
+from hairguard.hand_detector import HandResult, INDEX_TIP, PINKY_TIP
 from hairguard.head_zone import HairZone
 
 
 class _State(Enum):
-    IDLE = auto()       # no hand near head
-    TRIGGERED = auto()  # hand detected, waiting for trigger_delay_sec
-    ALERTING = auto()   # alert active, hand still at head
-    COOLDOWN = auto()   # hand left head, waiting dismiss_delay_sec
+    IDLE = auto()
+    TRIGGERED = auto()
+    ALERTING = auto()
+    COOLDOWN = auto()
 
 
 @dataclass
 class AnalysisResult:
-    should_alert: bool        # True while in ALERTING or COOLDOWN (show overlay)
-    hand_near_head: bool      # raw detection result this frame
-    state: str                # current state name
-    episode_started: bool     # one-shot: True on TRIGGERED -> ALERTING transition
-    episode_ended: bool       # one-shot: True on COOLDOWN -> IDLE transition
-    episode_duration: float   # seconds; set when episode_ended is True
-    # v2 debug info
-    pinch_distance: Optional[float] = None
+    should_alert: bool
+    hand_near_head: bool
+    state: str
+    episode_started: bool
+    episode_ended: bool
+    episode_duration: float
+    # v2.1 debug info
+    pinch_ratio_raw: Optional[float] = None
+    pinch_ratio_smooth: Optional[float] = None
+    spread_index_pinky: Optional[float] = None
+    hand_rotation: Optional[float] = None
     fingertips_in_zone: bool = False
-    is_gripping: bool = False
+    consecutive_frames: int = 0
 
 
 class GestureAnalyzer:
-    """Detects hair-touching gestures via a 7-layer pipeline and state machine.
+    """Data-driven hair-twisting detector.
 
-    All timing logic lives here. The app layer only needs to map
-    ``AnalysisResult.should_alert`` to overlay show/hide.
+    Features (per frame, O(1) with ring buffers):
+      1. pinch_mean_20f: 20-frame rolling mean of pinch_ratio
+      2. spread_8_20: distance(index_tip, pinky_tip) — finger clustering
+      3. hand_rotation_20f: rolling mean of hand angle delta — motion detector
+
+    Detection rule:
+      frame_positive = (pinch_mean_20f <= pinch_threshold)
+                   AND (spread_8_20 <= spread_threshold)
+                   AND (hand_rotation_20f <= rotation_threshold)
+                   AND (fingertips in hair zone)
+
+    Persistence: require N consecutive positive frames before triggering.
     """
+
+    _WINDOW = 20  # rolling window size (frames)
 
     def __init__(self, config: Config) -> None:
         det = "detection"
         self._trigger_delay_sec: float = config.get(det, "trigger_delay_sec")
         self._dismiss_delay_sec: float = config.get(det, "dismiss_delay_sec")
-        self._min_confidence: float = config.get(det, "min_confidence")
-        self._pinch_threshold: float = config.get(det, "pinch_threshold")
         self._min_presence: float = config.get(det, "min_presence_score")
         self._hair_zone_offset: float = config.get(det, "hair_zone_offset")
-        self._grip_curl_threshold: int = int(config.get(det, "grip_curl_threshold"))
 
+        # Data-driven thresholds (from empirical analysis)
+        self._pinch_threshold: float = config.get(det, "pinch_threshold")
+        self._spread_threshold: float = config.get(det, "spread_threshold")
+        self._rotation_threshold: float = config.get(det, "rotation_threshold")
+        self._persist_frames: int = int(config.get(det, "persist_frames"))
+
+        # Ring buffers for rolling features
+        self._pinch_buf: collections.deque = collections.deque(maxlen=self._WINDOW)
+        self._rotation_buf: collections.deque = collections.deque(maxlen=self._WINDOW)
+        self._last_hand_angle: Optional[float] = None
+        self._consecutive_positive: int = 0
+
+        # State machine
         self._state = _State.IDLE
         self._state_entered_at: float = 0.0
         self._episode_started_at: float = 0.0
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def analyze(
         self,
@@ -72,36 +99,16 @@ class GestureAnalyzer:
         frame_height: int,
         frame_width: int,
     ) -> AnalysisResult:
-        """Process one frame and advance the state machine.
-
-        Parameters
-        ----------
-        pose_result:
-            Output of PoseDetector.process().
-        hand_results:
-            List of HandResult from HandDetector.detect(); may be empty.
-        face_result:
-            Output of FaceDetector.detect().
-        frame_height:
-            Frame height in pixels (kept for API symmetry; not used in v2).
-        frame_width:
-            Frame width in pixels (kept for API symmetry; not used in v2).
-
-        Returns
-        -------
-        AnalysisResult
-            Snapshot of the current analysis state with v2 debug fields.
-        """
         now = time.monotonic()
-        detect_info = self._detect(pose_result, hand_results, face_result)
+        detection = self._detect(pose_result, hand_results, face_result)
 
-        hand_near_head: bool = detect_info["detected"]
+        hand_near_head = detection["detected"]
+
         episode_started = False
         episode_ended = False
         episode_duration = 0.0
 
-        # ---- state machine transitions ----
-
+        # State machine (unchanged)
         if self._state is _State.IDLE:
             if hand_near_head:
                 self._transition(_State.TRIGGERED, now)
@@ -121,7 +128,6 @@ class GestureAnalyzer:
         elif self._state is _State.COOLDOWN:
             if hand_near_head:
                 self._transition(_State.ALERTING, now)
-                # Do NOT reset _episode_started_at; episode continues
             elif now - self._state_entered_at >= self._dismiss_delay_sec:
                 episode_duration = now - self._episode_started_at
                 episode_ended = True
@@ -136,14 +142,13 @@ class GestureAnalyzer:
             episode_started=episode_started,
             episode_ended=episode_ended,
             episode_duration=episode_duration,
-            pinch_distance=detect_info["pinch_distance"],
-            fingertips_in_zone=detect_info["fingertips_in_zone"],
-            is_gripping=detect_info["is_gripping"],
+            pinch_ratio_raw=detection.get("pinch_raw"),
+            pinch_ratio_smooth=detection.get("pinch_smooth"),
+            spread_index_pinky=detection.get("spread"),
+            hand_rotation=detection.get("rotation"),
+            fingertips_in_zone=detection.get("in_zone", False),
+            consecutive_frames=self._consecutive_positive,
         )
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _transition(self, new_state: _State, now: float) -> None:
         self._state = new_state
@@ -155,38 +160,34 @@ class GestureAnalyzer:
         hand_results: list[HandResult],
         face_result: FaceResult,
     ) -> dict:
-        """7-layer detection pipeline.
-
-        Returns a dict with keys:
-            detected          bool
-            pinch_distance    float | None
-            fingertips_in_zone bool
-            is_gripping       bool
-        """
         result: dict = {
             "detected": False,
-            "pinch_distance": None,
-            "fingertips_in_zone": False,
-            "is_gripping": False,
+            "pinch_raw": None,
+            "pinch_smooth": None,
+            "spread": None,
+            "rotation": None,
+            "in_zone": False,
         }
 
         # Layer 1: Hand present?
         if not hand_results:
+            self._consecutive_positive = 0
             return result
 
         # Layer 2: Head located?
         if not pose_result.detected:
+            self._consecutive_positive = 0
             return result
 
         # Layer 3: Compute hair zone
         zone = HairZone(face_result, pose_result, self._hair_zone_offset)
 
-        # For each hand:
+        # Check each hand
         for hand in hand_results:
             thumb = hand.thumb_tip()
             index = hand.index_tip()
 
-            # Filter by presence (Presence guard (before Layer 4))
+            # Presence guard
             thumb_p = thumb.presence if thumb.presence is not None else 0.0
             index_p = index.presence if index.presence is not None else 0.0
             if thumb_p < self._min_presence or index_p < self._min_presence:
@@ -195,22 +196,57 @@ class GestureAnalyzer:
             # Layer 4: Fingertips in hair zone?
             if not (zone.contains(thumb.x, thumb.y) or zone.contains(index.x, index.y)):
                 continue
-            result["fingertips_in_zone"] = True
+            result["in_zone"] = True
 
-            # Layer 5: Pinch detected? (normalized by hand size)
-            pinch_r = hand.pinch_ratio()
-            result["pinch_distance"] = pinch_r
-            if pinch_r >= self._pinch_threshold:
-                continue
+            # --- Compute features ---
 
-            # Layer 6: Not gripping?
-            gripping = hand.is_gripping(self._grip_curl_threshold)
-            result["is_gripping"] = gripping
-            if gripping:
-                continue
+            # Feature 1: Pinch ratio (smoothed)
+            pinch_raw = hand.pinch_ratio()
+            result["pinch_raw"] = pinch_raw
+            self._pinch_buf.append(pinch_raw)
+            pinch_smooth = sum(self._pinch_buf) / len(self._pinch_buf)
+            result["pinch_smooth"] = pinch_smooth
 
-            # Layer 7: All checks passed — detected
-            result["detected"] = True
-            return result
+            # Feature 2: Index-to-pinky spread
+            pinky = hand.landmarks.get(PINKY_TIP)
+            idx_lm = hand.landmarks.get(INDEX_TIP)
+            if pinky and idx_lm:
+                spread = math.sqrt((idx_lm.x - pinky.x) ** 2 + (idx_lm.y - pinky.y) ** 2)
+            else:
+                spread = 1.0  # no data = assume spread
+            result["spread"] = spread
 
+            # Feature 3: Hand rotation rate
+            wrist = hand.landmarks.get(0)
+            mid_mcp = hand.landmarks.get(9)
+            if wrist and mid_mcp:
+                angle = math.atan2(mid_mcp.y - wrist.y, mid_mcp.x - wrist.x)
+                if self._last_hand_angle is not None:
+                    delta = abs(angle - self._last_hand_angle)
+                    if delta > math.pi:
+                        delta = 2 * math.pi - delta
+                    self._rotation_buf.append(delta)
+                self._last_hand_angle = angle
+            rotation = sum(self._rotation_buf) / len(self._rotation_buf) if self._rotation_buf else 0.0
+            result["rotation"] = rotation
+
+            # --- Decision rule (data-driven thresholds) ---
+            frame_positive = (
+                pinch_smooth <= self._pinch_threshold
+                and spread <= self._spread_threshold
+                and rotation <= self._rotation_threshold
+            )
+
+            if frame_positive:
+                self._consecutive_positive += 1
+            else:
+                self._consecutive_positive = 0
+
+            # Persistence filter
+            if self._consecutive_positive >= self._persist_frames:
+                result["detected"] = True
+            return result  # return after first hand with features computed
+
+        # No hand matched
+        self._consecutive_positive = 0
         return result

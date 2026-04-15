@@ -6,7 +6,7 @@ Coverage:
 - Gripping object near head does NOT trigger
 - No hands -> IDLE
 - State machine transitions (IDLE -> TRIGGERED -> ALERTING -> COOLDOWN -> IDLE)
-- Debug fields on AnalysisResult (pinch_distance, fingertips_in_zone, is_gripping)
+- Debug fields on AnalysisResult (pinch_ratio_smooth, spread, rotation, consecutive_frames)
 """
 from __future__ import annotations
 
@@ -47,10 +47,12 @@ class _FakeConfig:
         ("detection", "trigger_delay_sec"): 0.8,
         ("detection", "dismiss_delay_sec"): 2.5,
         ("detection", "min_confidence"): 0.5,
-        ("detection", "pinch_threshold"): 0.4,
+        ("detection", "pinch_threshold"): 0.25,
+        ("detection", "spread_threshold"): 0.075,
+        ("detection", "rotation_threshold"): 0.075,
+        ("detection", "persist_frames"): 1,  # set to 1 for unit tests (instant detection)
         ("detection", "min_presence_score"): 0.7,
         ("detection", "hair_zone_offset"): 0.4,
-        ("detection", "grip_curl_threshold"): 2,
     }
 
     def get(self, *keys: str):
@@ -134,19 +136,17 @@ def _make_hand_landmarks(
     lms[PINKY_MCP] = HandLandmark(x=mcp_x + 0.04, y=pinky_mcp_y, z=0.0, presence=presence)
 
     if fingers_curled:
-        # Tips closer to wrist than MCP along wrist->mcp axis (i.e. lower y
-        # in normalized coords since wrist > mcp in y).
-        # wrist_y > mcp_y so tips are "curled" when tip_y > mcp_y
+        # Curled: tips closer to wrist than MCP along axis
         curled_tip_y = mcp_y + 0.05
         lms[MIDDLE_TIP] = HandLandmark(x=mcp_x, y=curled_tip_y, z=0.0, presence=presence)
         lms[RING_TIP] = HandLandmark(x=mcp_x + 0.02, y=curled_tip_y, z=0.0, presence=presence)
         lms[PINKY_TIP] = HandLandmark(x=mcp_x + 0.04, y=curled_tip_y, z=0.0, presence=presence)
     else:
-        # Open fingers: tips further from wrist than MCP
-        open_tip_y = mcp_y - 0.15
-        lms[MIDDLE_TIP] = HandLandmark(x=mcp_x, y=open_tip_y, z=0.0, presence=presence)
-        lms[RING_TIP] = HandLandmark(x=mcp_x + 0.02, y=open_tip_y, z=0.0, presence=presence)
-        lms[PINKY_TIP] = HandLandmark(x=mcp_x + 0.04, y=open_tip_y, z=0.0, presence=presence)
+        # Relaxed: tips near the thumb/index (clustered, as in twisting)
+        # Keep pinky close to index for low spread (<= 0.075)
+        lms[MIDDLE_TIP] = HandLandmark(x=index_x + 0.01, y=index_y + 0.01, z=0.0, presence=presence)
+        lms[RING_TIP] = HandLandmark(x=index_x + 0.02, y=index_y + 0.02, z=0.0, presence=presence)
+        lms[PINKY_TIP] = HandLandmark(x=index_x + 0.03, y=index_y + 0.03, z=0.0, presence=presence)
 
     return lms
 
@@ -254,9 +254,12 @@ class TestAnalysisResultFields:
             episode_ended=False,
             episode_duration=0.0,
         )
-        assert r.pinch_distance is None
+        assert r.pinch_ratio_raw is None
+        assert r.pinch_ratio_smooth is None
+        assert r.spread_index_pinky is None
+        assert r.hand_rotation is None
         assert r.fingertips_in_zone is False
-        assert r.is_gripping is False
+        assert r.consecutive_frames == 0
 
     def test_v2_fields_settable(self):
         r = AnalysisResult(
@@ -266,13 +269,16 @@ class TestAnalysisResultFields:
             episode_started=True,
             episode_ended=False,
             episode_duration=0.0,
-            pinch_distance=0.12,
+            pinch_ratio_raw=0.12,
+            pinch_ratio_smooth=0.15,
+            spread_index_pinky=0.03,
+            hand_rotation=0.02,
             fingertips_in_zone=True,
-            is_gripping=False,
+            consecutive_frames=5,
         )
-        assert r.pinch_distance == pytest.approx(0.12)
+        assert r.pinch_ratio_smooth == pytest.approx(0.15)
         assert r.fingertips_in_zone is True
-        assert r.is_gripping is False
+        assert r.consecutive_frames == 5
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +298,7 @@ class TestDetectLayers:
         result = self.analyzer.analyze(self.pose, [], self.face, 480, 640)
         assert result.hand_near_head is False
         assert result.fingertips_in_zone is False
-        assert result.pinch_distance is None
+        assert result.pinch_ratio_raw is None
 
     # Layer 2: pose not detected
     def test_no_pose_returns_not_detected(self):
@@ -303,40 +309,29 @@ class TestDetectLayers:
 
     # Layer 4: fingertips outside zone
     def test_fingertips_outside_zone_not_detected(self):
-        # Tips at y=0.60 which is below forehead (y=0.35) → not in zone
         hand = _make_pinching_hand(in_zone=False)
         result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
         assert result.hand_near_head is False
         assert result.fingertips_in_zone is False
 
-    # Layer 5: open hand (no pinch) in zone does NOT trigger
+    # Open hand (high pinch ratio) in zone does NOT trigger
     def test_open_hand_in_zone_not_detected(self):
         hand = _make_open_hand_in_zone()
         result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
         assert result.hand_near_head is False
-        assert result.fingertips_in_zone is True   # fingertips ARE in zone
-        assert result.pinch_distance is not None    # pinch ratio was measured
+        assert result.fingertips_in_zone is True
 
-    # Layer 6: gripping hand in zone does NOT trigger
-    def test_gripping_hand_in_zone_not_detected(self):
-        hand = _make_gripping_hand_in_zone()
-        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
-        assert result.hand_near_head is False
-        assert result.is_gripping is True
-
-    # Happy path: pinching hand in zone DOES trigger
+    # Happy path: pinching hand with clustered fingers in zone DOES trigger
     def test_pinching_hand_in_zone_detected(self):
         hand = _make_pinching_hand(in_zone=True)
         result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
         assert result.hand_near_head is True
         assert result.fingertips_in_zone is True
-        assert result.pinch_distance is not None
-        assert result.is_gripping is False
+        assert result.pinch_ratio_smooth is not None
 
     # Low presence landmark is skipped
     def test_low_presence_hand_skipped(self):
         hand = _make_pinching_hand(in_zone=True)
-        # Downgrade presence on all landmarks
         for idx in hand.landmarks:
             lm = hand.landmarks[idx]
             hand.landmarks[idx] = HandLandmark(
@@ -346,13 +341,13 @@ class TestDetectLayers:
         assert result.hand_near_head is False
 
     # Multiple hands: one gripping, one pinching → should detect
-    def test_second_hand_pinching_still_detected(self):
-        gripping = _make_gripping_hand_in_zone()
-        pinching = _make_pinching_hand(in_zone=True)
-        result = self.analyzer.analyze(
-            self.pose, [gripping, pinching], self.face, 480, 640
-        )
-        assert result.hand_near_head is True
+    def test_features_computed_even_when_not_detected(self):
+        """Features are computed and returned even if detection rule fails."""
+        hand = _make_open_hand_in_zone()
+        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
+        assert result.hand_near_head is False
+        assert result.pinch_ratio_smooth is not None  # features still computed
+        assert result.spread_index_pinky is not None
 
 
 # ---------------------------------------------------------------------------

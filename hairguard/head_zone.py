@@ -87,7 +87,7 @@ class HairZone:
                 nose = self._pose.landmarks.get("nose")
                 if nose is not None:
                     forehead_to_nose = nose.y - raw_y  # positive distance
-                    return raw_y - forehead_to_nose * 0.4  # shift up by 40%
+                    return raw_y - forehead_to_nose * 0.55  # shift up by 55%
                 return raw_y
 
         # Fallback: use nose.y as a forehead proxy

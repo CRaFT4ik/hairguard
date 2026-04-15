@@ -115,7 +115,7 @@ class HairZone:
         else:
             self._head_center = (0.5, 0.4)  # last resort
 
-        self._head_scale = max(ear_distance, self._shoulder_distance * 0.60)
+        self._head_scale = max(ear_distance, self._shoulder_distance * 0.45)
 
         # --- Step 4: Up vector (toward crown) ---
         hh = self._head_horizontal
@@ -285,9 +285,24 @@ class HairZoneSmoother:
             self._prev_hh = hh
             return zone
 
-        # EMA on scalars and 2D vectors
-        cx = a * cx + (1 - a) * self._prev_center[0]
-        cy = a * cy + (1 - a) * self._prev_center[1]
+        # Outlier rejection: if center jumped more than 20% of head_scale
+        # in one frame, it's likely a landmark glitch from hand occlusion.
+        # Reject the new center and keep the previous one.
+        jump_dx = cx - self._prev_center[0]
+        jump_dy = cy - self._prev_center[1]
+        jump_dist = math.sqrt(jump_dx * jump_dx + jump_dy * jump_dy)
+        max_jump = max(self._prev_sw, self._prev_sh) * 0.20  # 20% of stable ellipse size
+
+        if jump_dist > max_jump and max_jump > 0.01:
+            # Outlier — keep previous center, still smooth size/orientation
+            cx = self._prev_center[0]
+            cy = self._prev_center[1]
+        else:
+            # Normal EMA on center
+            cx = a * cx + (1 - a) * self._prev_center[0]
+            cy = a * cy + (1 - a) * self._prev_center[1]
+
+        # EMA on size
         sw = a * sw + (1 - a) * self._prev_sw
         sh = a * sh + (1 - a) * self._prev_sh
 

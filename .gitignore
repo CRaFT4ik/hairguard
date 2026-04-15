@@ -1,1 +1,4 @@
 .superpowers/
+hairguard.egg-info/
+__pycache__/
+*.pyc

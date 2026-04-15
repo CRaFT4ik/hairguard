@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hairguard"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mediapipe",
+    "opencv-python",
+    "pystray",
+    "Pillow",
+    "pyyaml",
+    "colorama",
+    "plyer",
+]
+
+[project.optional-dependencies]
+wayland = ["PyGObject"]
+
+[project.scripts]
+hairguard = "hairguard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hairguard*"]

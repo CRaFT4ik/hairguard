@@ -165,7 +165,7 @@ class HairZone:
 
         # Detect head yaw: when ears are foreshortened relative to shoulders,
         # head is turned sideways. Forehead line becomes unreliable.
-        if self._shoulder_distance > 0.01:
+        if self._shoulder_distance > 0.05:
             self._yaw_ratio = ear_distance / self._shoulder_distance
         else:
             self._yaw_ratio = 0.45  # neutral default
@@ -197,12 +197,22 @@ class HairZone:
         if not in_ellipse:
             return False
 
-        # Forehead filter: exclude face area, but only when facing camera.
-        # When head is turned sideways (yaw_ratio < 0.3 = ears foreshortened),
-        # forehead landmarks become unreliable — skip the filter.
-        if self._face.detected and self._yaw_ratio > 0.3:
-            if not self._face.is_above_forehead(x, y):
-                return False
+        # Forehead filter: exclude face area.
+        # When head is turned sideways (yaw_ratio < 0.3), forehead landmarks
+        # become unreliable. Apply a relaxed version: allow points slightly
+        # below the forehead line, proportional to how turned the head is.
+        if self._face.detected:
+            forehead_y = self._face.forehead_y_at_x(x)
+            if forehead_y is not None:
+                # Relax forehead boundary when head is turned
+                if self._yaw_ratio < 0.3:
+                    # Allow points up to 15% of head_scale below forehead
+                    margin = self._head_scale * 0.15
+                    if y > forehead_y + margin:
+                        return False
+                else:
+                    if y > forehead_y:
+                        return False
 
         return True
 
@@ -255,7 +265,6 @@ class HairZoneSmoother:
         self._prev_sw: Optional[float] = None
         self._prev_sh: Optional[float] = None
         self._prev_hh: Optional[tuple[float, float]] = None
-        self._prev_uv: Optional[tuple[float, float]] = None
 
     def smooth(self, zone: HairZone) -> HairZone:
         """Apply EMA smoothing to the zone's ellipse parameters in-place."""
@@ -274,7 +283,6 @@ class HairZoneSmoother:
             self._prev_sw = sw
             self._prev_sh = sh
             self._prev_hh = hh
-            self._prev_uv = uv
             return zone
 
         # EMA on scalars and 2D vectors
@@ -283,17 +291,19 @@ class HairZoneSmoother:
         sw = a * sw + (1 - a) * self._prev_sw
         sh = a * sh + (1 - a) * self._prev_sh
 
+        # Smooth head_horizontal only, then DERIVE up_vec to guarantee orthogonality
         hh_x = a * hh[0] + (1 - a) * self._prev_hh[0]
         hh_y = a * hh[1] + (1 - a) * self._prev_hh[1]
         hh_len = math.sqrt(hh_x * hh_x + hh_y * hh_y)
         if hh_len > 1e-9:
             hh = (hh_x / hh_len, hh_y / hh_len)
 
-        uv_x = a * uv[0] + (1 - a) * self._prev_uv[0]
-        uv_y = a * uv[1] + (1 - a) * self._prev_uv[1]
-        uv_len = math.sqrt(uv_x * uv_x + uv_y * uv_y)
-        if uv_len > 1e-9:
-            uv = (uv_x / uv_len, uv_y / uv_len)
+        # Derive up_vec as 90° CCW rotation of smoothed head_horizontal
+        # Then correct sign to match the original up_vec direction
+        uv_derived = (-hh[1], hh[0])
+        if _dot(uv_derived, uv) < 0:
+            uv_derived = (hh[1], -hh[0])  # flip if pointing wrong way
+        uv = uv_derived
 
         # Update zone internals with smoothed values
         zone._hair_center = (cx, cy)
@@ -307,6 +317,5 @@ class HairZoneSmoother:
         self._prev_sw = sw
         self._prev_sh = sh
         self._prev_hh = hh
-        self._prev_uv = uv
 
         return zone

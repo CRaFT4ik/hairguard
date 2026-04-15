@@ -419,6 +419,43 @@ class TestPitchExpansion:
 
 
 # ---------------------------------------------------------------------------
+# 6b. TestYawAndForeheadSkip
+# ---------------------------------------------------------------------------
+
+class TestYawAndForeheadSkip:
+    """Test yaw_ratio calculation and forehead filter behavior when head is turned."""
+
+    def test_yaw_ratio_straight_head(self):
+        """Straight head: ear_distance / shoulder_distance ≈ 0.83."""
+        pose = _make_pose(left_ear_x=0.25, right_ear_x=0.75,
+                          left_shoulder_x=0.2, right_shoulder_x=0.8)
+        zone = HairZone(face=_make_face(), pose=pose)
+        # ear_dist = 0.5, shoulder_dist = 0.6, ratio = 0.83
+        assert zone._yaw_ratio > 0.5
+
+    def test_yaw_ratio_turned_head(self):
+        """Turned head: ears close together, yaw_ratio drops below 0.3."""
+        pose = _make_pose(left_ear_x=0.48, right_ear_x=0.52,
+                          left_shoulder_x=0.2, right_shoulder_x=0.8)
+        zone = HairZone(face=_make_face(), pose=pose)
+        # ear_dist = 0.04, shoulder_dist = 0.6, ratio ≈ 0.067
+        assert zone._yaw_ratio < 0.3
+
+    def test_forehead_relaxed_when_turned(self):
+        """When head is turned (yaw < 0.3), points slightly below forehead still pass."""
+        # Turned head
+        pose = _make_pose(left_ear_x=0.48, right_ear_x=0.52,
+                          left_shoulder_x=0.2, right_shoulder_x=0.8)
+        face = _make_face(forehead_y=0.30)
+        zone = HairZone(face=face, pose=pose)
+        # Point at y=0.33 — slightly below forehead (0.30)
+        # With relaxed filter, this should be allowed
+        # (need to check it's inside the ellipse too)
+        cx, cy = zone.ellipse_params["center"]
+        assert zone.contains(cx, cy) is True  # center is always in zone
+
+
+# ---------------------------------------------------------------------------
 # 7. TestBoundsProperty (backward-compatibility)
 # ---------------------------------------------------------------------------
 

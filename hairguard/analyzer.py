@@ -187,10 +187,9 @@ class GestureAnalyzer:
             index = hand.index_tip()
 
             # Filter by presence (Presence guard (before Layer 4))
-            if (
-                thumb.presence < self._min_presence
-                or index.presence < self._min_presence
-            ):
+            thumb_p = thumb.presence if thumb.presence is not None else 0.0
+            index_p = index.presence if index.presence is not None else 0.0
+            if thumb_p < self._min_presence or index_p < self._min_presence:
                 continue
 
             # Layer 4: Fingertips in hair zone?

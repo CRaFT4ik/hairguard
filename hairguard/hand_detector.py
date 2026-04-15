@@ -102,7 +102,7 @@ class HandResult:
         """
         t = self.thumb_tip()
         i = self.index_tip()
-        if t.presence < 0.5 or i.presence < 0.5:
+        if (t.presence or 0.0) < 0.5 or (i.presence or 0.0) < 0.5:
             return False
         return self.pinch_ratio() < threshold
 
@@ -251,7 +251,7 @@ class HandDetector:
                     x=lm.x,
                     y=lm.y,
                     z=lm.z,
-                    presence=getattr(lm, "presence", 1.0),
+                    presence=getattr(lm, "presence", None) or getattr(lm, "visibility", None) or 1.0,
                 )
 
             top = classifications[0]

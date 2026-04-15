@@ -39,6 +39,7 @@ class TkOverlay:
     def __init__(self, config: "Config") -> None:
         self._opacity: float = float(config.get("alert", "opacity") or 0.7)
         self._text_color: str = str(config.get("alert", "text_color") or "#ffffff")
+        self._visible: bool = False
 
         # Enable DPI awareness on Windows before creating any tk windows
         if sys.platform == "win32":
@@ -177,6 +178,7 @@ class TkOverlay:
         self._label.config(text=phrase)
         self._window.deiconify()
         self._window.lift()
+        self._visible = True
         if sys.platform == "win32":
             # Re-apply topmost without stealing focus
             try:
@@ -196,13 +198,11 @@ class TkOverlay:
     def hide(self) -> None:
         """Hide the overlay."""
         self._window.withdraw()
+        self._visible = False
 
     def is_visible(self) -> bool:
         """Return True if the overlay window is currently shown."""
-        try:
-            return self._window.state() != "withdrawn"
-        except tk.TclError:
-            return False
+        return self._visible
 
     def get_root(self) -> tk.Tk:
         """Return the tkinter root so the app can schedule ``root.after()`` callbacks."""

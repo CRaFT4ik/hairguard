@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,10 +19,6 @@ from mediapipe.tasks.python.vision import (
 _KEY_LANDMARKS = {
     "left_wrist": PoseLandmark.LEFT_WRIST,
     "right_wrist": PoseLandmark.RIGHT_WRIST,
-    "left_thumb": PoseLandmark.LEFT_THUMB,
-    "right_thumb": PoseLandmark.RIGHT_THUMB,
-    "left_index": PoseLandmark.LEFT_INDEX,
-    "right_index": PoseLandmark.RIGHT_INDEX,
     "nose": PoseLandmark.NOSE,
     "left_ear": PoseLandmark.LEFT_EAR,
     "right_ear": PoseLandmark.RIGHT_EAR,
@@ -39,9 +36,9 @@ def _ensure_model() -> str:
     if _MODEL_PATH.exists():
         return str(_MODEL_PATH)
     _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"[detector] Скачиваю модель pose landmarker...")
+    print("[detector] Downloading pose landmarker model...")
     urllib.request.urlretrieve(_MODEL_URL, str(_MODEL_PATH))
-    print(f"[detector] Модель сохранена в {_MODEL_PATH}")
+    print(f"[detector] Model saved to {_MODEL_PATH}")
     return str(_MODEL_PATH)
 
 
@@ -80,7 +77,7 @@ class PoseDetector:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-        self._frame_ts += 33  # ~30fps timestamp in ms (monotonically increasing)
+        self._frame_ts = int(time.monotonic() * 1000)
         result = self._landmarker.detect_for_video(mp_image, self._frame_ts)
 
         if not result.pose_landmarks or len(result.pose_landmarks) == 0:

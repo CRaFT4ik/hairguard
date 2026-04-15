@@ -58,10 +58,6 @@ _STATE_LABEL_COLORS: dict[str, tuple[int, int, int]] = {
 _LANDMARK_META: dict[str, tuple[str, str]] = {
     "left_wrist":    ("L.Wrist",    "wrist"),
     "right_wrist":   ("R.Wrist",    "wrist"),
-    "left_thumb":    ("L.Thumb",    "finger"),
-    "right_thumb":   ("R.Thumb",    "finger"),
-    "left_index":    ("L.Index",    "finger"),
-    "right_index":   ("R.Index",    "finger"),
     "nose":          ("Nose",       "head"),
     "left_ear":      ("L.Ear",      "ear"),
     "right_ear":     ("R.Ear",      "ear"),
@@ -118,10 +114,7 @@ def _draw_landmark_dot(
     confidence: float,
 ) -> None:
     """Draw a labeled circle for one landmark."""
-    if role == "finger":
-        color = wrist_color
-        radius = 6
-    elif role == "head":
+    if role == "head":
         color = COLOR_CYAN
         radius = 7
     elif role == "wrist":
@@ -179,7 +172,7 @@ def _draw_shoulder_line(
     _draw_text_with_shadow(img, "shoulder baseline", (mid[0] - 55, mid[1] - 6), _FONT_SM, COLOR_GRAY)
 
 
-def _draw_wrist_ear_lines(
+def _draw_hand_head_lines(
     img: np.ndarray,
     wrists: dict[str, tuple[int, int]],
     ears: dict[str, tuple[int, int]],
@@ -264,6 +257,7 @@ def _draw_status_panel(
     min_ratio: Optional[float],
     fps: float,
     lm: dict[str, Landmark],
+    distance_threshold: float,
 ) -> None:
     """Render the status panel at the top of the frame."""
     h, w = img.shape[:2]
@@ -304,7 +298,7 @@ def _draw_status_panel(
 
     y += line_h
     ratio_text  = f"{min_ratio:.3f}" if min_ratio is not None else "N/A"
-    ratio_color = COLOR_RED if (min_ratio is not None and min_ratio < 0.6) else COLOR_WHITE
+    ratio_color = COLOR_RED if (min_ratio is not None and min_ratio < distance_threshold) else COLOR_WHITE
     cv2.putText(img, "Min ratio:", (col1_x, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
     cv2.putText(img, ratio_text, (col1_x + 80, y), _FONT, _FONT_MD, ratio_color, 1, cv2.LINE_AA)
 
@@ -316,14 +310,13 @@ def _draw_status_panel(
     cv2.putText(img, "Landmark confidence:", (col2_x, y), _FONT, _FONT_SM, COLOR_GRAY, 1, cv2.LINE_AA)
 
     conf_names = [
-        ("L.Thm",    "left_thumb"),
-        ("R.Thm",    "right_thumb"),
-        ("L.Idx",    "left_index"),
-        ("R.Idx",    "right_index"),
-        ("Nose",     "nose"),
-        ("L.Ear",    "left_ear"),
+        ("L.Wrst",  "left_wrist"),
+        ("R.Wrst",  "right_wrist"),
+        ("Nose",    "nose"),
+        ("L.Ear",   "left_ear"),
+        ("R.Ear",   "right_ear"),
+        ("L.Shldr", "left_shoulder"),
     ]
-    x_off = col2_x
     for i, (label, key) in enumerate(conf_names):
         conf = lm[key].confidence if key in lm else 0.0
         col = COLOR_GREEN if conf >= 0.5 else COLOR_RED
@@ -402,13 +395,20 @@ def draw_overlay(
             _draw_ear_zone(img, pts[head_name], zone_radius)
 
     # ---- Hand-to-head connection lines + ratio labels ----
-    # Prefer finger points (thumb+index), fall back to wrists
-    finger_pts = {k: v for k, v in pts.items() if "thumb" in k or "index" in k}
-    wrist_only_pts = {k: v for k, v in pts.items() if "wrist" in k}
-    wrist_pts = finger_pts if finger_pts else wrist_only_pts
-    ear_pts   = {k: v for k, v in pts.items() if "ear" in k or k == "nose"}
+    wrist_pts = {
+        k: v for k, v in pts.items()
+        if "wrist" in k
+        and lm.get(k) is not None
+        and lm[k].confidence >= min_confidence
+    }
+    ear_pts = {
+        k: v for k, v in pts.items()
+        if ("ear" in k or k == "nose")
+        and lm.get(k) is not None
+        and lm[k].confidence >= min_confidence
+    }
 
-    ratios = _draw_wrist_ear_lines(
+    ratios = _draw_hand_head_lines(
         img,
         wrist_pts,
         ear_pts,
@@ -431,7 +431,7 @@ def draw_overlay(
     min_ratio: Optional[float] = min(ratios.values()) if ratios else None
 
     # ---- Status panel ----
-    _draw_status_panel(img, state, result.should_alert, result.hand_near_head, min_ratio, fps, lm)
+    _draw_status_panel(img, state, result.should_alert, result.hand_near_head, min_ratio, fps, lm, distance_threshold)
 
     return img
 

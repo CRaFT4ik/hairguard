@@ -140,17 +140,26 @@ class GestureAnalyzer:
 
         lm = pose_result.landmarks
 
-        # We need wrists and ears to do anything useful
+        # Use fingertips (index + pinky) for more accurate detection,
+        # fall back to wrists if fingers not available
+        fingers = [
+            lm.get("left_index"), lm.get("right_index"),
+            lm.get("left_pinky"), lm.get("right_pinky"),
+        ]
         wrists = [lm.get("left_wrist"), lm.get("right_wrist")]
         ears = [lm.get("left_ear"), lm.get("right_ear")]
         left_shoulder = lm.get("left_shoulder")
         right_shoulder = lm.get("right_shoulder")
 
-        # Filter out landmarks with insufficient confidence
+        # Filter by confidence
+        fingers = [f for f in fingers if f is not None and f.confidence >= self._min_confidence]
         wrists = [w for w in wrists if w is not None and w.confidence >= self._min_confidence]
         ears = [e for e in ears if e is not None and e.confidence >= self._min_confidence]
 
-        if not wrists or not ears:
+        # Prefer fingers, fall back to wrists
+        hand_points = fingers if fingers else wrists
+
+        if not hand_points or not ears:
             return False
 
         # Decide which distance metric to use
@@ -162,9 +171,9 @@ class GestureAnalyzer:
         )
 
         if use_fallback:
-            return self._detect_fallback(wrists, ears, frame_height, frame_width)
+            return self._detect_fallback(hand_points, ears, frame_height, frame_width)
         else:
-            return self._detect_normalized(wrists, ears, left_shoulder, right_shoulder)
+            return self._detect_normalized(hand_points, ears, left_shoulder, right_shoulder)
 
     def _detect_normalized(
         self,

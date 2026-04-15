@@ -58,6 +58,10 @@ _STATE_LABEL_COLORS: dict[str, tuple[int, int, int]] = {
 _LANDMARK_META: dict[str, tuple[str, str]] = {
     "left_wrist":    ("L.Wrist",    "wrist"),
     "right_wrist":   ("R.Wrist",    "wrist"),
+    "left_index":    ("L.Index",    "finger"),
+    "right_index":   ("R.Index",    "finger"),
+    "left_pinky":    ("L.Pinky",    "finger"),
+    "right_pinky":   ("R.Pinky",    "finger"),
     "left_ear":      ("L.Ear",      "ear"),
     "right_ear":     ("R.Ear",      "ear"),
     "left_shoulder": ("L.Shoulder", "shoulder"),
@@ -113,7 +117,10 @@ def _draw_landmark_dot(
     confidence: float,
 ) -> None:
     """Draw a labeled circle for one landmark."""
-    if role == "wrist":
+    if role == "finger":
+        color = wrist_color
+        radius = 6
+    elif role == "wrist":
         color = wrist_color
         radius = 8
     elif role == "ear":
@@ -305,12 +312,12 @@ def _draw_status_panel(
     cv2.putText(img, "Landmark confidence:", (col2_x, y), _FONT, _FONT_SM, COLOR_GRAY, 1, cv2.LINE_AA)
 
     conf_names = [
-        ("L.Wrist",  "left_wrist"),
-        ("R.Wrist",  "right_wrist"),
+        ("L.Idx",    "left_index"),
+        ("R.Idx",    "right_index"),
+        ("L.Pnk",    "left_pinky"),
+        ("R.Pnk",    "right_pinky"),
         ("L.Ear",    "left_ear"),
         ("R.Ear",    "right_ear"),
-        ("L.Shldr",  "left_shoulder"),
-        ("R.Shldr",  "right_shoulder"),
     ]
     x_off = col2_x
     for i, (label, key) in enumerate(conf_names):
@@ -390,8 +397,11 @@ def draw_overlay(
             zone_radius = int(distance_threshold * shoulder_dist_px)
             _draw_ear_zone(img, pts[ear_name], zone_radius)
 
-    # ---- Wrist-ear connection lines + ratio labels ----
-    wrist_pts = {k: v for k, v in pts.items() if "wrist" in k}
+    # ---- Hand-ear connection lines + ratio labels ----
+    # Prefer finger points, fall back to wrists (same logic as analyzer)
+    finger_pts = {k: v for k, v in pts.items() if "index" in k or "pinky" in k}
+    wrist_only_pts = {k: v for k, v in pts.items() if "wrist" in k}
+    wrist_pts = finger_pts if finger_pts else wrist_only_pts
     ear_pts   = {k: v for k, v in pts.items() if "ear" in k}
 
     ratios = _draw_wrist_ear_lines(

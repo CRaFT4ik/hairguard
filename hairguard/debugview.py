@@ -218,11 +218,43 @@ def draw_hair_zone(
     pose: PoseResult,
     hair_zone_offset: float,
 ) -> None:
-    """Visualize the hair zone: forehead polyline + ear vertical bounds."""
+    """Visualize the hair zone as a rotated ellipse + forehead polyline."""
     h, w = img.shape[:2]
 
     zone = HairZone(face, pose, hair_zone_offset)
-    x_min, x_max, y_ceiling, y_forehead_avg = zone.bounds
+    params = zone.ellipse_params
+
+    cx, cy = params["center"]
+    sw = params["semi_width"]
+    sh = params["semi_height"]
+    hh = params["head_horizontal"]
+    uv = params["up_vec"]
+    hc = params["head_center"]
+
+    # --- Draw rotated ellipse ---
+    # OpenCV ellipse needs: center in pixels, axes in pixels, angle in degrees
+    center_px = (int(cx * w), int(cy * h))
+    axes_px = (int(sw * w), int(sh * h))
+    # Angle = angle of head_horizontal relative to screen horizontal
+    angle_deg = math.degrees(math.atan2(hh[1], hh[0]))
+
+    if axes_px[0] > 0 and axes_px[1] > 0:
+        # Semi-transparent fill
+        overlay = img.copy()
+        cv2.ellipse(overlay, center_px, axes_px, angle_deg, 0, 360, (200, 200, 0), -1)
+        cv2.addWeighted(overlay, 0.10, img, 0.90, 0, img)
+        # Outline
+        cv2.ellipse(img, center_px, axes_px, angle_deg, 0, 360, COLOR_ORANGE, 2, cv2.LINE_AA)
+
+    # --- Hair center cross ---
+    cross_size = 8
+    cv2.drawMarker(img, center_px, COLOR_CYAN, cv2.MARKER_CROSS, cross_size, 2)
+
+    # --- Up vector arrow from head center ---
+    hc_px = (int(hc[0] * w), int(hc[1] * h))
+    arrow_len = int(sh * h * 0.5)
+    arrow_end = (hc_px[0] + int(uv[0] * arrow_len), hc_px[1] + int(uv[1] * arrow_len))
+    cv2.arrowedLine(img, hc_px, arrow_end, (0, 255, 255), 2, cv2.LINE_AA, tipLength=0.3)
 
     # --- Forehead polyline (cyan) ---
     forehead_pts = zone.forehead_line
@@ -230,32 +262,6 @@ def draw_hair_zone(
         pixel_pts = [_px(x, y, w, h) for x, y in forehead_pts]
         pts_arr = np.array(pixel_pts, dtype=np.int32).reshape((-1, 1, 2))
         cv2.polylines(img, [pts_arr], isClosed=False, color=COLOR_CYAN, thickness=2, lineType=cv2.LINE_AA)
-        # Optional: semi-transparent fill above forehead line
-        # Build a filled region: forehead points + top border
-        top_left  = (pixel_pts[0][0],  0)
-        top_right = (pixel_pts[-1][0], 0)
-        fill_pts = [top_left] + pixel_pts + [top_right]
-        fill_arr = np.array(fill_pts, dtype=np.int32)
-        overlay = img.copy()
-        cv2.fillPoly(overlay, [fill_arr], (200, 200, 0))
-        cv2.addWeighted(overlay, 0.08, img, 0.92, 0, img)
-
-    # --- Ear vertical bounds (dashed vertical lines) ---
-    for norm_x in (x_min, x_max):
-        px_x = int(norm_x * w)
-        # Draw dashed line manually
-        dash_len = 8
-        gap_len  = 6
-        y = PANEL_HEIGHT
-        while y < h:
-            y_end = min(y + dash_len, h)
-            cv2.line(img, (px_x, y), (px_x, y_end), COLOR_ORANGE, 1, cv2.LINE_AA)
-            y += dash_len + gap_len
-
-    # --- Ceiling line (subtle) ---
-    ceiling_y = int(y_ceiling * h)
-    cv2.line(img, (int(x_min * w), ceiling_y), (int(x_max * w), ceiling_y),
-             (100, 100, 200), 1, cv2.LINE_AA)
 
 
 # ---------------------------------------------------------------------------

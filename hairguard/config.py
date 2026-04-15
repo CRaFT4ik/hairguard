@@ -20,7 +20,7 @@ DEFAULTS: dict[str, Any] = {
         "rotation_threshold": 0.075,
         "persist_frames": 5,
         "min_presence_score": 0.7,
-        "hair_dilation_px": 25,
+        "hair_dilation_px": 20,
     },
     "alert": {
         "opacity": 0.7,

@@ -194,7 +194,7 @@ class HairGuardApp:
 
     def _camera_loop(self) -> None:
         """Daemon thread: continuously reads frames and puts them in the queue."""
-        fps: float = float(self._config.get("detection", "fps") or 5)
+        fps: float = float(self._config.get("detection", "fps") or 10)
         sleep_sec = 1.0 / fps
         consecutive_failures = 0
         max_failures = 30  # ~6 seconds at 5 FPS

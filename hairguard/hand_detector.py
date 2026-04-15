@@ -208,6 +208,7 @@ class HandDetector:
             min_tracking_confidence=min_confidence,
         )
         self._landmarker = _HandLandmarker.create_from_options(options)
+        self._last_ts = 0
 
     def detect(self, frame, timestamp_ms: int | None = None) -> list[HandResult]:
         """Detect hands in a BGR frame and return a list of HandResult objects.
@@ -222,7 +223,13 @@ class HandDetector:
         cv2 = self._cv2
         mp  = self._mp
 
-        ts_ms = int(timestamp_ms) if timestamp_ms is not None else int(time.monotonic() * 1000)
+        if timestamp_ms is None:
+            timestamp_ms = int(time.monotonic() * 1000)
+        # Ensure strictly monotonic
+        if timestamp_ms <= self._last_ts:
+            timestamp_ms = self._last_ts + 1
+        self._last_ts = timestamp_ms
+        ts_ms = timestamp_ms
 
         rgb      = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)

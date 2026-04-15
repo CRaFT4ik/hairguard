@@ -186,7 +186,7 @@ class GestureAnalyzer:
             thumb = hand.thumb_tip()
             index = hand.index_tip()
 
-            # Filter by presence (Layer 3 guard)
+            # Filter by presence (Presence guard (before Layer 4))
             if (
                 thumb.presence < self._min_presence
                 or index.presence < self._min_presence

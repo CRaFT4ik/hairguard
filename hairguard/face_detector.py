@@ -19,15 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import cv2
-import mediapipe as mp
-from mediapipe.tasks.python import BaseOptions
-from mediapipe.tasks.python.vision import (
-    FaceLandmarker,
-    FaceLandmarkerOptions,
-    RunningMode,
-)
-
 # ---------------------------------------------------------------------------
 # Model download
 # ---------------------------------------------------------------------------
@@ -172,6 +163,20 @@ class FaceDetector:
     """
 
     def __init__(self, min_confidence: float = 0.5) -> None:
+        # Defer heavy imports so the module is importable without mediapipe
+        # installed (e.g. in CI environments that only run pure-Python tests).
+        import cv2  # noqa: F401  — validated here, used in detect()
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions
+        from mediapipe.tasks.python.vision import (
+            FaceLandmarker,
+            FaceLandmarkerOptions,
+            RunningMode,
+        )
+
+        self._cv2 = cv2
+        self._mp  = mp
+
         model_path = _ensure_model()
         options = FaceLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=model_path),
@@ -182,6 +187,7 @@ class FaceDetector:
             min_tracking_confidence=min_confidence,
         )
         self._landmarker = FaceLandmarker.create_from_options(options)
+        self._last_ts = 0
 
     def detect(self, frame, timestamp_ms: Optional[int] = None) -> FaceResult:
         """Run face detection on a BGR frame and return a FaceResult.
@@ -193,8 +199,15 @@ class FaceDetector:
         timestamp_ms:
             Timestamp in milliseconds.  If omitted, time.monotonic() is used.
         """
+        cv2 = self._cv2
+        mp  = self._mp
+
         if timestamp_ms is None:
             timestamp_ms = int(time.monotonic() * 1000)
+        # Ensure strictly monotonic
+        if timestamp_ms <= self._last_ts:
+            timestamp_ms = self._last_ts + 1
+        self._last_ts = timestamp_ms
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)

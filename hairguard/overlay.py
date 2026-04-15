@@ -77,12 +77,18 @@ class TkOverlay:
         sh = root.winfo_screenheight()
         win.geometry(f"{sw}x{sh}+0+0")
 
-        # --- transparency ---
+        # --- background ---
         win.configure(bg=self._BG_COLOR)
-        try:
-            win.attributes("-alpha", self._opacity)
-        except tk.TclError:
-            pass  # platform may not support alpha
+
+        # --- transparency ---
+        # On Windows, apply alpha BEFORE any WS_EX flags to avoid
+        # the WS_EX_LAYERED + alpha rendering conflict.
+        # On Linux, -alpha works reliably.
+        if not sys.platform == "win32":
+            try:
+                win.attributes("-alpha", self._opacity)
+            except tk.TclError:
+                pass
 
         # --- phrase label ---
         self._label = tk.Label(
@@ -96,35 +102,42 @@ class TkOverlay:
         )
         self._label.place(relx=0.5, rely=0.5, anchor="center")
 
-        # --- platform-specific focus prevention ---
+        # --- platform-specific setup ---
         win.update_idletasks()  # ensure window ID is assigned
         if sys.platform == "win32":
-            self._apply_win32_no_activate()
+            self._apply_win32_overlay()
         elif sys.platform.startswith("linux"):
             self._apply_linux_notification_type()
 
-    def _apply_win32_no_activate(self) -> None:
-        """Set WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED on the HWND."""
+    def _apply_win32_overlay(self) -> None:
+        """Windows: set WS_EX_NOACTIVATE + topmost, then apply alpha via SetLayeredWindowAttributes."""
         try:
             import ctypes
-            import ctypes.wintypes
 
             GWL_EXSTYLE = -20
             WS_EX_LAYERED = 0x00080000
             WS_EX_NOACTIVATE = 0x08000000
             WS_EX_TOPMOST = 0x00000008
+            WS_EX_TRANSPARENT = 0x00000020
             HWND_TOPMOST = -1
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
             SWP_NOACTIVATE = 0x0010
+            LWA_ALPHA = 0x02
 
             hwnd = self._window.winfo_id()
             user32 = ctypes.windll.user32
 
+            # Add NOACTIVATE + LAYERED + TOPMOST to extended style
             ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             ex_style |= WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
 
+            # Set alpha via Win32 API (not tkinter -alpha which conflicts)
+            alpha_byte = int(self._opacity * 255)
+            user32.SetLayeredWindowAttributes(hwnd, 0, alpha_byte, LWA_ALPHA)
+
+            # Ensure topmost without activating
             user32.SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -132,7 +145,7 @@ class TkOverlay:
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             )
         except Exception as exc:  # noqa: BLE001
-            warnings.warn(f"[overlay] Win32 focus-prevention setup failed: {exc}")
+            warnings.warn(f"[overlay] Win32 overlay setup failed: {exc}")
 
     def _apply_linux_notification_type(self) -> None:
         """Try to mark the window as _NET_WM_WINDOW_TYPE_NOTIFICATION via xprop."""

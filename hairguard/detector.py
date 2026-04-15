@@ -18,10 +18,7 @@ from mediapipe.tasks.python.vision import (
 _KEY_LANDMARKS = {
     "left_wrist": PoseLandmark.LEFT_WRIST,
     "right_wrist": PoseLandmark.RIGHT_WRIST,
-    "left_index": PoseLandmark.LEFT_INDEX,
-    "right_index": PoseLandmark.RIGHT_INDEX,
-    "left_pinky": PoseLandmark.LEFT_PINKY,
-    "right_pinky": PoseLandmark.RIGHT_PINKY,
+    "nose": PoseLandmark.NOSE,
     "left_ear": PoseLandmark.LEFT_EAR,
     "right_ear": PoseLandmark.RIGHT_EAR,
     "left_shoulder": PoseLandmark.LEFT_SHOULDER,

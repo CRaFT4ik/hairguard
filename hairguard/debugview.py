@@ -30,7 +30,7 @@ from hairguard.analyzer import GestureAnalyzer, AnalysisResult
 from hairguard.camera import CameraManager
 from hairguard.config import Config
 from hairguard.detector import PoseDetector, PoseResult, Landmark
-from hairguard.face_detector import FaceDetector, FaceResult
+# FaceDetector no longer used for detection (hair mask replaces it)
 from hairguard.hair_segmenter import HairSegmenter, HairMask
 from hairguard.hand_detector import (
     HandDetector,
@@ -412,7 +412,7 @@ def main(camera: Optional[int] = None) -> None:
     print("[debugview] Initializing detectors...")
     pose_det = PoseDetector(min_confidence=min_confidence)
     hand_det = HandDetector(max_hands=2, min_confidence=min_confidence)
-    face_det = FaceDetector(min_confidence=min_confidence)
+    # FaceDetector removed — hair mask replaces geometric zone
     hair_seg = HairSegmenter()
     analyzer = GestureAnalyzer(config)
 
@@ -458,7 +458,6 @@ def main(camera: Optional[int] = None) -> None:
 
             pose      = pose_det.process(frame, timestamp_ms=ts)
             hands     = hand_det.detect(frame, timestamp_ms=ts + 1)
-            face      = face_det.detect(frame, timestamp_ms=ts + 2)
             hair_mask = hair_seg.segment(frame)
 
             result = analyzer.analyze(pose, hands, hair_mask, h, w)

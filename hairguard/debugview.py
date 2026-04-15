@@ -31,13 +31,13 @@ from hairguard.camera import CameraManager
 from hairguard.config import Config
 from hairguard.detector import PoseDetector, PoseResult, Landmark
 from hairguard.face_detector import FaceDetector, FaceResult
+from hairguard.hair_segmenter import HairSegmenter, HairMask
 from hairguard.hand_detector import (
     HandDetector,
     HandResult,
     THUMB_TIP,
     INDEX_TIP,
 )
-from hairguard.head_zone import HairZone, HairZoneSmoother
 
 # ---------------------------------------------------------------------------
 # Color palette (BGR)
@@ -209,56 +209,29 @@ def draw_pinch_indicator(
 
 
 # ---------------------------------------------------------------------------
-# draw_hair_zone
+# draw_hair_mask
 # ---------------------------------------------------------------------------
 
-def draw_hair_zone(
-    img: np.ndarray,
-    face: FaceResult,
-    pose: PoseResult,
-    hair_zone_offset: float,
-    smoother: Optional[HairZoneSmoother] = None,
-) -> None:
-    """Visualize the hair zone as a rotated ellipse + forehead polyline."""
+def draw_hair_mask(img: np.ndarray, hair_mask: HairMask) -> None:
+    """Draw a semi-transparent green overlay on hair pixels."""
+    if not hair_mask.detected:
+        return
+
+    mask = hair_mask.get_mask()  # (H, W) uint8
+
+    # Resize mask to display frame size if needed
     h, w = img.shape[:2]
+    if mask.shape[0] != h or mask.shape[1] != w:
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
-    zone = HairZone(face, pose, hair_zone_offset)
-    if smoother is not None:
-        zone = smoother.smooth(zone)
-    params = zone.ellipse_params
+    # Build a green-tinted overlay where hair is detected
+    overlay = img.copy()
+    overlay[mask > 0] = (
+        overlay[mask > 0] * np.array([0.3, 0.3, 0.3], dtype=np.float32)
+        + np.array([0, 120, 0], dtype=np.float32)
+    ).clip(0, 255).astype(np.uint8)
 
-    cx, cy = params["center"]
-    sw = params["semi_width"]
-    sh = params["semi_height"]
-    hh = params["head_horizontal"]
-    uv = params["up_vec"]
-    hc = params["head_center"]
-
-    # --- Draw rotated ellipse ---
-    # OpenCV ellipse needs: center in pixels, axes in pixels, angle in degrees
-    center_px = (int(cx * w), int(cy * h))
-    axes_px = (int(sw * w), int(sh * h))
-    # Angle = angle of head_horizontal relative to screen horizontal
-    angle_deg = math.degrees(math.atan2(hh[1], hh[0]))
-
-    if axes_px[0] > 0 and axes_px[1] > 0:
-        # Semi-transparent fill
-        overlay = img.copy()
-        cv2.ellipse(overlay, center_px, axes_px, angle_deg, 0, 360, (200, 200, 0), -1)
-        cv2.addWeighted(overlay, 0.10, img, 0.90, 0, img)
-        # Outline
-        cv2.ellipse(img, center_px, axes_px, angle_deg, 0, 360, COLOR_ORANGE, 2, cv2.LINE_AA)
-
-    # --- Hair center cross (same color as ellipse) ---
-    cross_size = 8
-    cv2.drawMarker(img, center_px, COLOR_ORANGE, cv2.MARKER_CROSS, cross_size, 2)
-
-    # --- Forehead polyline (cyan) ---
-    forehead_pts = zone.forehead_line
-    if len(forehead_pts) >= 2:
-        pixel_pts = [_px(x, y, w, h) for x, y in forehead_pts]
-        pts_arr = np.array(pixel_pts, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.polylines(img, [pts_arr], isClosed=False, color=COLOR_CYAN, thickness=2, lineType=cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.45, img, 0.55, 0, img)
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +385,6 @@ def main(camera: Optional[int] = None) -> None:
     config = Config()
     combined_threshold: float = config.get("detection", "combined_threshold") or 0.55
     min_confidence: float  = config.get("detection", "min_confidence")
-    hair_zone_offset: float = config.get("detection", "hair_zone_offset")
 
     default_camera = camera if camera is not None else (config.get("camera") or 0)
 
@@ -420,6 +392,7 @@ def main(camera: Optional[int] = None) -> None:
     pose_det = PoseDetector(min_confidence=min_confidence)
     hand_det = HandDetector(max_hands=2, min_confidence=min_confidence)
     face_det = FaceDetector(min_confidence=min_confidence)
+    hair_seg = HairSegmenter()
     analyzer = GestureAnalyzer(config)
 
     available_cameras = CameraManager.list_cameras()
@@ -441,7 +414,6 @@ def main(camera: Optional[int] = None) -> None:
     fps_counter = 0
     fps_value   = 0.0
     fps_ts      = time.monotonic()
-    zone_smoother = HairZoneSmoother(alpha=0.3)
 
     # --- CSV recording state ---
     import csv
@@ -463,11 +435,12 @@ def main(camera: Optional[int] = None) -> None:
             h, w = frame.shape[:2]
             ts = int(time.monotonic() * 1000)
 
-            pose  = pose_det.process(frame, timestamp_ms=ts)
-            hands = hand_det.detect(frame, timestamp_ms=ts + 1)
-            face  = face_det.detect(frame, timestamp_ms=ts + 2)
+            pose      = pose_det.process(frame, timestamp_ms=ts)
+            hands     = hand_det.detect(frame, timestamp_ms=ts + 1)
+            face      = face_det.detect(frame, timestamp_ms=ts + 2)
+            hair_mask = hair_seg.segment(frame)
 
-            result = analyzer.analyze(pose, hands, face, h, w)
+            result = analyzer.analyze(pose, hands, hair_mask, h, w)
 
             # FPS
             fps_counter += 1
@@ -504,7 +477,7 @@ def main(camera: Optional[int] = None) -> None:
             # --- Build display frame ---
             display = frame.copy()
 
-            draw_hair_zone(display, face, pose, hair_zone_offset, zone_smoother)
+            draw_hair_mask(display, hair_mask)
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, combined_threshold)
             draw_pinch_indicator(display, hands, combined_threshold)
@@ -589,6 +562,7 @@ def main(camera: Optional[int] = None) -> None:
         pose_det.close()
         hand_det.close()
         face_det.close()
+        hair_seg.close()
         cv2.destroyAllWindows()
         print("[debugview] Closed.")
 

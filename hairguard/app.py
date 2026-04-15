@@ -34,6 +34,7 @@ class HairGuardApp:
         from hairguard.detector import PoseDetector
         from hairguard.hand_detector import HandDetector
         from hairguard.face_detector import FaceDetector
+        from hairguard.hair_segmenter import HairSegmenter
         from hairguard.analyzer import GestureAnalyzer
         from hairguard.overlay import create_overlay
         from hairguard.tray import TrayApp
@@ -64,6 +65,7 @@ class HairGuardApp:
         self._detector = PoseDetector(min_confidence=min_conf)
         self._hand_detector = HandDetector(max_hands=2, min_confidence=min_conf)
         self._face_detector = FaceDetector(min_confidence=min_conf)
+        self._hair_segmenter = HairSegmenter()
         self._analyzer = GestureAnalyzer(self._config)
 
         # Derive tick interval from configured FPS
@@ -164,6 +166,10 @@ class HairGuardApp:
             pass
         try:
             self._face_detector.close()
+        except Exception:
+            pass
+        try:
+            self._hair_segmenter.close()
         except Exception:
             pass
 
@@ -268,8 +274,8 @@ class HairGuardApp:
         ts_base = int(time.monotonic() * 1000)
         pose_result = self._detector.process(frame, timestamp_ms=ts_base)
         hand_results = self._hand_detector.detect(frame, timestamp_ms=ts_base + 1)
-        face_result = self._face_detector.detect(frame, timestamp_ms=ts_base + 2)
-        result = self._analyzer.analyze(pose_result, hand_results, face_result, frame_height, frame_width)
+        hair_mask = self._hair_segmenter.segment(frame)
+        result = self._analyzer.analyze(pose_result, hand_results, hair_mask, frame_height, frame_width)
 
         # --- Overlay management ---
         if result.should_alert and not self._overlay.is_visible():

@@ -19,9 +19,8 @@ from typing import Optional
 
 from hairguard.config import Config
 from hairguard.detector import PoseResult
-from hairguard.face_detector import FaceResult
+from hairguard.hair_segmenter import HairMask
 from hairguard.hand_detector import HandResult, INDEX_TIP, PINKY_TIP
-from hairguard.head_zone import HairZone, HairZoneSmoother
 
 
 class _State(Enum):
@@ -73,7 +72,6 @@ class GestureAnalyzer:
         self._trigger_delay_sec: float = config.get(det, "trigger_delay_sec")
         self._dismiss_delay_sec: float = config.get(det, "dismiss_delay_sec")
         self._min_presence: float = config.get(det, "min_presence_score")
-        self._hair_zone_offset: float = config.get(det, "hair_zone_offset")
 
         # Data-driven thresholds (from empirical analysis)
         self._combined_threshold: float = config.get(det, "combined_threshold")
@@ -86,9 +84,6 @@ class GestureAnalyzer:
         self._last_hand_angle: Optional[float] = None
         self._consecutive_positive: int = 0
 
-        # Temporal smoothing for hair zone
-        self._zone_smoother = HairZoneSmoother(alpha=0.3)
-
         # State machine
         self._state = _State.IDLE
         self._state_entered_at: float = 0.0
@@ -98,12 +93,12 @@ class GestureAnalyzer:
         self,
         pose_result: PoseResult,
         hand_results: list[HandResult],
-        face_result: FaceResult,
+        hair_mask: HairMask,
         frame_height: int,
         frame_width: int,
     ) -> AnalysisResult:
         now = time.monotonic()
-        detection = self._detect(pose_result, hand_results, face_result)
+        detection = self._detect(pose_result, hand_results, hair_mask)
 
         hand_near_head = detection["detected"]
 
@@ -162,7 +157,7 @@ class GestureAnalyzer:
         self,
         pose_result: PoseResult,
         hand_results: list[HandResult],
-        face_result: FaceResult,
+        hair_mask: HairMask,
     ) -> dict:
         result: dict = {
             "detected": False,
@@ -183,10 +178,6 @@ class GestureAnalyzer:
             self._consecutive_positive = 0
             return result
 
-        # Layer 3: Compute hair zone
-        zone = HairZone(face_result, pose_result, self._hair_zone_offset)
-        zone = self._zone_smoother.smooth(zone)
-
         # Check each hand
         for hand in hand_results:
             thumb = hand.thumb_tip()
@@ -198,8 +189,8 @@ class GestureAnalyzer:
             if thumb_p < self._min_presence or index_p < self._min_presence:
                 continue
 
-            # Layer 4: Fingertips in hair zone?
-            if not (zone.contains(thumb.x, thumb.y) or zone.contains(index.x, index.y)):
+            # Layer 3: Fingertips in hair mask?
+            if not (hair_mask.contains(thumb.x, thumb.y) or hair_mask.contains(index.x, index.y)):
                 continue
             result["in_zone"] = True
 

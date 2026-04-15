@@ -20,7 +20,7 @@ import pytest
 
 from hairguard.analyzer import AnalysisResult, GestureAnalyzer
 from hairguard.detector import Landmark, PoseResult
-from hairguard.face_detector import FaceLandmark, FaceResult, FOREHEAD_INDICES
+from hairguard.hair_segmenter import HairMask
 from hairguard.hand_detector import (
     MIDDLE_MCP,
     MIDDLE_TIP,
@@ -51,7 +51,6 @@ class _FakeConfig:
         ("detection", "rotation_threshold"): 0.10,
         ("detection", "persist_frames"): 1,  # set to 1 for unit tests (instant detection)
         ("detection", "min_presence_score"): 0.7,
-        ("detection", "hair_zone_offset"): 0.4,
     }
 
     def get(self, *keys: str):
@@ -88,17 +87,28 @@ def _make_pose(
     )
 
 
-def _make_face(forehead_y: float = 0.35, detected: bool = True) -> FaceResult:
-    """Flat forehead at forehead_y spanning x=0.2..0.8."""
-    if not detected:
-        return FaceResult(landmarks={}, detected=False)
-    return FaceResult(
-        landmarks={
-            FOREHEAD_INDICES[0]: FaceLandmark(x=0.2, y=forehead_y),
-            FOREHEAD_INDICES[1]: FaceLandmark(x=0.8, y=forehead_y),
-        },
-        detected=True,
-    )
+def _make_hair_mask(
+    in_zone_y: float = 0.20,
+    zone_top: float = 0.05,
+    zone_bottom: float = 0.35,
+    zone_left: float = 0.2,
+    zone_right: float = 0.8,
+    width: int = 640,
+    height: int = 480,
+) -> HairMask:
+    """Create a HairMask with a rectangular hair region.
+
+    By default the hair region covers x=[0.2, 0.8], y=[0.05, 0.35] —
+    the same area used by the old ellipse zone in tests.
+    """
+    import numpy as np
+    mask = np.zeros((height, width), dtype=np.uint8)
+    r0 = int(zone_top * height)
+    r1 = int(zone_bottom * height)
+    c0 = int(zone_left * width)
+    c1 = int(zone_right * width)
+    mask[r0:r1, c0:c1] = 1
+    return HairMask(mask=mask, width=width, height=height)
 
 
 def _make_hand_landmarks(
@@ -290,11 +300,11 @@ class TestDetectLayers:
     def setup_method(self):
         self.analyzer = _make_analyzer()
         self.pose = _make_pose()
-        self.face = _make_face()
+        self.hair_mask = _make_hair_mask()
 
     # Layer 1: no hands
     def test_no_hands_returns_not_detected(self):
-        result = self.analyzer.analyze(self.pose, [], self.face, 480, 640)
+        result = self.analyzer.analyze(self.pose, [], self.hair_mask, 480, 640)
         assert result.hand_near_head is False
         assert result.fingertips_in_zone is False
         assert result.pinch_ratio_raw is None
@@ -303,27 +313,27 @@ class TestDetectLayers:
     def test_no_pose_returns_not_detected(self):
         pose = _make_pose(detected=False)
         hand = _make_pinching_hand()
-        result = self.analyzer.analyze(pose, [hand], self.face, 480, 640)
+        result = self.analyzer.analyze(pose, [hand], self.hair_mask, 480, 640)
         assert result.hand_near_head is False
 
-    # Layer 4: fingertips outside zone
+    # Layer 3: fingertips outside hair mask
     def test_fingertips_outside_zone_not_detected(self):
         hand = _make_pinching_hand(in_zone=False)
-        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
+        result = self.analyzer.analyze(self.pose, [hand], self.hair_mask, 480, 640)
         assert result.hand_near_head is False
         assert result.fingertips_in_zone is False
 
     # Open hand (high pinch ratio) in zone does NOT trigger
     def test_open_hand_in_zone_not_detected(self):
         hand = _make_open_hand_in_zone()
-        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
+        result = self.analyzer.analyze(self.pose, [hand], self.hair_mask, 480, 640)
         assert result.hand_near_head is False
         assert result.fingertips_in_zone is True
 
     # Happy path: pinching hand with clustered fingers in zone DOES trigger
     def test_pinching_hand_in_zone_detected(self):
         hand = _make_pinching_hand(in_zone=True)
-        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
+        result = self.analyzer.analyze(self.pose, [hand], self.hair_mask, 480, 640)
         assert result.hand_near_head is True
         assert result.fingertips_in_zone is True
         assert result.pinch_ratio_smooth is not None
@@ -336,14 +346,14 @@ class TestDetectLayers:
             hand.landmarks[idx] = HandLandmark(
                 x=lm.x, y=lm.y, z=lm.z, presence=0.1
             )
-        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
+        result = self.analyzer.analyze(self.pose, [hand], self.hair_mask, 480, 640)
         assert result.hand_near_head is False
 
     # Multiple hands: one gripping, one pinching → should detect
     def test_features_computed_even_when_not_detected(self):
         """Features are computed and returned even if detection rule fails."""
         hand = _make_open_hand_in_zone()
-        result = self.analyzer.analyze(self.pose, [hand], self.face, 480, 640)
+        result = self.analyzer.analyze(self.pose, [hand], self.hair_mask, 480, 640)
         assert result.hand_near_head is False
         assert result.pinch_ratio_smooth is not None  # features still computed
         assert result.spread_index_pinky is not None
@@ -362,8 +372,8 @@ class TestStateMachine:
     def _pose(self) -> PoseResult:
         return _make_pose()
 
-    def _face(self) -> FaceResult:
-        return _make_face()
+    def _hair_mask(self) -> HairMask:
+        return _make_hair_mask()
 
     def _pinching(self) -> list[HandResult]:
         return [_make_pinching_hand(in_zone=True)]
@@ -375,21 +385,21 @@ class TestStateMachine:
 
     def test_starts_in_idle(self):
         az = self._analyzer()
-        result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert result.state == "IDLE"
         assert result.should_alert is False
 
     def test_idle_no_detection_stays_idle(self):
         az = self._analyzer()
         for _ in range(3):
-            result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+            result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert result.state == "IDLE"
 
     # --- IDLE -> TRIGGERED ---
 
     def test_detection_moves_to_triggered(self):
         az = self._analyzer()
-        result = az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         assert result.state == "TRIGGERED"
         assert result.should_alert is False
         assert result.episode_started is False
@@ -399,21 +409,21 @@ class TestStateMachine:
     def test_hand_leaves_before_delay_returns_to_idle(self):
         az = self._analyzer()
         # Enter TRIGGERED
-        az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         # Hand gone before trigger_delay_sec
-        result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert result.state == "IDLE"
 
     # --- TRIGGERED -> ALERTING (after delay) ---
 
     def test_trigger_delay_elapsed_moves_to_alerting(self):
         az = self._analyzer()
-        az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
 
         # Patch _state_entered_at to simulate delay elapsed
         az._state_entered_at -= 1.0  # 1 second in the past > 0.8 threshold
 
-        result = az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         assert result.state == "ALERTING"
         assert result.should_alert is True
         assert result.episode_started is True
@@ -423,12 +433,12 @@ class TestStateMachine:
     def test_hand_leaves_alerting_enters_cooldown(self):
         az = self._analyzer()
         # Reach ALERTING
-        az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         az._state_entered_at -= 1.0
-        az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         assert az._state.name == "ALERTING"
 
-        result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert result.state == "COOLDOWN"
         assert result.should_alert is True  # still showing during cooldown
 
@@ -436,9 +446,9 @@ class TestStateMachine:
 
     def test_hand_returns_during_cooldown_resumes_alerting(self):
         az = self._analyzer()
-        _reach_cooldown(az, self._pose(), self._face())
+        _reach_cooldown(az, self._pose(), self._hair_mask())
 
-        result = az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         assert result.state == "ALERTING"
         assert result.should_alert is True
         assert result.episode_started is False  # NOT a new episode start
@@ -447,13 +457,13 @@ class TestStateMachine:
 
     def test_dismiss_delay_elapsed_ends_episode(self):
         az = self._analyzer()
-        _reach_cooldown(az, self._pose(), self._face())
+        _reach_cooldown(az, self._pose(), self._hair_mask())
 
         # Simulate time passing: episode started 5 s ago, cooldown entered 3 s ago
         az._episode_started_at -= 5.0
         az._state_entered_at -= 3.0  # > dismiss_delay_sec=2.5
 
-        result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert result.state == "IDLE"
         assert result.episode_ended is True
         assert result.episode_duration > 0.0
@@ -463,32 +473,32 @@ class TestStateMachine:
 
     def test_episode_duration_is_positive(self):
         az = self._analyzer()
-        _reach_cooldown(az, self._pose(), self._face())
+        _reach_cooldown(az, self._pose(), self._hair_mask())
 
         az._episode_started_at -= 5.0
         az._state_entered_at -= 3.0
 
-        result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert result.episode_duration > 0.0
 
     # --- episode_started only fires once ---
 
     def test_episode_started_fires_only_on_transition(self):
         az = self._analyzer()
-        az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         az._state_entered_at -= 1.0
 
-        r1 = az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        r1 = az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         assert r1.episode_started is True
 
-        r2 = az.analyze(self._pose(), self._pinching(), self._face(), 480, 640)
+        r2 = az.analyze(self._pose(), self._pinching(), self._hair_mask(), 480, 640)
         assert r2.episode_started is False  # not again on next frame
 
     # --- analyze() signature accepts frame_height and frame_width ---
 
     def test_analyze_accepts_frame_dimensions(self):
         az = self._analyzer()
-        result = az.analyze(self._pose(), self._no_hands(), self._face(), 480, 640)
+        result = az.analyze(self._pose(), self._no_hands(), self._hair_mask(), 480, 640)
         assert isinstance(result, AnalysisResult)
 
 
@@ -496,17 +506,17 @@ class TestStateMachine:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _reach_cooldown(az: GestureAnalyzer, pose: PoseResult, face: FaceResult) -> None:
+def _reach_cooldown(az: GestureAnalyzer, pose: PoseResult, hair_mask: HairMask) -> None:
     """Drive az into COOLDOWN state."""
     hand = [_make_pinching_hand(in_zone=True)]
     no_hand: list[HandResult] = []
 
     # IDLE -> TRIGGERED
-    az.analyze(pose, hand, face, 480, 640)
+    az.analyze(pose, hand, hair_mask, 480, 640)
     # Fast-forward trigger delay
     az._state_entered_at -= 1.0
     # TRIGGERED -> ALERTING
-    az.analyze(pose, hand, face, 480, 640)
+    az.analyze(pose, hand, hair_mask, 480, 640)
     # ALERTING -> COOLDOWN
-    az.analyze(pose, no_hand, face, 480, 640)
+    az.analyze(pose, no_hand, hair_mask, 480, 640)
     assert az._state.name == "COOLDOWN"

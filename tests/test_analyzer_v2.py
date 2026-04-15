@@ -52,6 +52,7 @@ class _FakeConfig:
         ("detection", "rotation_threshold"): 0.075,
         ("detection", "persist_frames"): 1,  # set to 1 for unit tests (instant detection)
         ("detection", "min_presence_score"): 0.7,
+        ("detection", "hair_dilation_px"): 25,
     }
 
     def get(self, *keys: str):

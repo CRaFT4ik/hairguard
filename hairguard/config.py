@@ -20,6 +20,7 @@ DEFAULTS: dict[str, Any] = {
         "rotation_threshold": 0.075,
         "persist_frames": 5,
         "min_presence_score": 0.7,
+        "hair_dilation_px": 25,
     },
     "alert": {
         "opacity": 0.7,
@@ -41,6 +42,7 @@ _FIELD_RULES: list[tuple[tuple[str, ...], type, tuple | None]] = [
     (("detection", "rotation_threshold"), float, (0.01, 0.5)),
     (("detection", "persist_frames"), (int, float), (1, 30)),
     (("detection", "min_presence_score"), float, (0.0, 1.0)),
+    (("detection", "hair_dilation_px"), (int, float), (1, 60)),
     (("alert", "opacity"), float, (0.0, 1.0)),
     (("alert", "text_color"), str, None),
     (("pause", "auto_resume_minutes"), (int, float), (1, None)),

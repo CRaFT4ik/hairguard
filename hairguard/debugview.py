@@ -406,6 +406,7 @@ def main(camera: Optional[int] = None) -> None:
     config = Config()
     pinch_threshold: float = config.get("detection", "pinch_threshold") or 0.25
     min_confidence: float  = config.get("detection", "min_confidence")
+    hair_dilation_px: int  = int(config.get("detection", "hair_dilation_px") or 25)
 
     default_camera = camera if camera is not None else (config.get("camera") or 0)
 
@@ -498,7 +499,7 @@ def main(camera: Optional[int] = None) -> None:
             display = frame.copy()
 
             # Refine mask: dilate + face cutout (same as analyzer)
-            refined_mask = hair_mask.dilate(12)
+            refined_mask = hair_mask.dilate(hair_dilation_px)
             if pose.detected:
                 plm = pose.landmarks
                 nose_lm = plm.get("nose")

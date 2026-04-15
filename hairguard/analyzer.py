@@ -77,6 +77,7 @@ class GestureAnalyzer:
         self._spread_threshold: float = config.get(det, "spread_threshold")
         self._rotation_threshold: float = config.get(det, "rotation_threshold")
         self._persist_frames: int = int(config.get(det, "persist_frames"))
+        self._hair_dilation_px: int = int(config.get(det, "hair_dilation_px"))
 
         # Ring buffers for rolling features
         self._pinch_buf: collections.deque = collections.deque(maxlen=self._WINDOW)
@@ -177,8 +178,8 @@ class GestureAnalyzer:
             self._consecutive_positive = 0
             return result
 
-        # Expand hair mask edges slightly for better coverage
-        refined = hair_mask.dilate(12)
+        # Expand hair mask edges for better coverage (side-camera views need more)
+        refined = hair_mask.dilate(self._hair_dilation_px)
 
         # Check each hand
         for hand in hand_results:

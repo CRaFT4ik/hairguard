@@ -11,12 +11,14 @@ CONFIG_PATH = HAIRGUARD_DIR / "config.yaml"
 DEFAULTS: dict[str, Any] = {
     "camera": 0,
     "detection": {
-        "distance_threshold": 0.6,
-        "fallback_frame_percent": 0.15,
-        "trigger_delay_sec": 1.5,
+        "trigger_delay_sec": 0.8,
         "dismiss_delay_sec": 2.5,
-        "fps": 5,
+        "fps": 10,
         "min_confidence": 0.5,
+        "pinch_threshold": 0.4,
+        "min_presence_score": 0.7,
+        "hair_zone_offset": 0.4,
+        "grip_curl_threshold": 2,
     },
     "alert": {
         "opacity": 0.7,
@@ -29,12 +31,14 @@ DEFAULTS: dict[str, Any] = {
 
 _FIELD_RULES: list[tuple[tuple[str, ...], type, tuple | None]] = [
     (("camera",), int, (0, 99)),
-    (("detection", "distance_threshold"), float, (0.0, 1.0)),
-    (("detection", "fallback_frame_percent"), float, (0.0, 1.0)),
     (("detection", "trigger_delay_sec"), float, (0.0, None)),
     (("detection", "dismiss_delay_sec"), float, (0.0, None)),
     (("detection", "fps"), (int, float), (1, None)),
     (("detection", "min_confidence"), float, (0.0, 1.0)),
+    (("detection", "pinch_threshold"), float, (0.1, 2.0)),
+    (("detection", "min_presence_score"), float, (0.0, 1.0)),
+    (("detection", "hair_zone_offset"), float, (0.0, 2.0)),
+    (("detection", "grip_curl_threshold"), (int, float), (0, 3)),
     (("alert", "opacity"), float, (0.0, 1.0)),
     (("alert", "text_color"), str, None),
     (("pause", "auto_resume_minutes"), (int, float), (1, None)),

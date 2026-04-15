@@ -126,6 +126,121 @@ class HairMask:
 # ---------------------------------------------------------------------------
 # HairSegmenter
 # ---------------------------------------------------------------------------
+# StableMaskTracker
+# ---------------------------------------------------------------------------
+
+
+class StableMaskTracker:
+    """Maintains a stable hair mask that doesn't jitter when hands occlude hair.
+
+    Strategy:
+      - When no hand is near the head: update the stable mask from the live
+        segmenter output every frame. Also record head landmark positions.
+      - When a hand IS near the head: freeze the mask and warp it to follow
+        head movement using an affine transform derived from pose landmarks.
+      - When hand leaves: wait `recovery_frames` for the segmenter to
+        recover from occlusion artifacts, then resume live updates.
+    """
+
+    def __init__(self, recovery_frames: int = 10) -> None:
+        self._stable_mask: Optional[np.ndarray] = None
+        self._stable_landmarks: Optional[dict] = None  # {name: (x, y)}
+        self._recovery_frames = recovery_frames
+        self._frames_since_hand_left = 999  # large = no recent hand
+
+    def update(
+        self,
+        live_mask: HairMask,
+        pose_landmarks: dict,
+        hand_near_head: bool,
+    ) -> HairMask:
+        """Return the best hair mask for this frame.
+
+        Parameters
+        ----------
+        live_mask: fresh output from HairSegmenter.segment()
+        pose_landmarks: dict of {name: Landmark} from PoseResult.landmarks
+        hand_near_head: True if any wrist is above shoulder level
+        """
+        current_lm = self._extract_head_points(pose_landmarks)
+
+        if hand_near_head:
+            self._frames_since_hand_left = 0
+        else:
+            self._frames_since_hand_left += 1
+
+        # If no stable mask yet, use live (first frames)
+        if self._stable_mask is None:
+            self._stable_mask = live_mask.get_mask().copy()
+            self._stable_landmarks = current_lm
+            return live_mask
+
+        # Decision: use live or frozen?
+        if self._frames_since_hand_left > self._recovery_frames:
+            # Hand has been gone long enough — live mask is clean, update stable
+            self._stable_mask = live_mask.get_mask().copy()
+            self._stable_landmarks = current_lm
+            return live_mask
+        else:
+            # Hand is near head OR just left — use frozen mask, warped to follow head
+            warped = self._warp_mask(
+                self._stable_mask,
+                self._stable_landmarks,
+                current_lm,
+                live_mask.width,
+                live_mask.height,
+            )
+            return HairMask(mask=warped, width=live_mask.width, height=live_mask.height)
+
+    def _extract_head_points(self, lm: dict) -> dict:
+        """Extract nose + ears as (x, y) pixel-normalized coords."""
+        pts = {}
+        for name in ("nose", "left_ear", "right_ear"):
+            l = lm.get(name)
+            if l is not None and (l.confidence or 0) >= 0.5:
+                pts[name] = (l.x, l.y)
+        return pts
+
+    def _warp_mask(
+        self,
+        mask: np.ndarray,
+        src_lm: dict,
+        dst_lm: dict,
+        width: int,
+        height: int,
+    ) -> np.ndarray:
+        """Warp frozen mask to follow head movement via translation.
+
+        Uses nose as primary anchor. If nose unavailable, uses ear midpoint.
+        """
+        import cv2
+
+        # Find best anchor point
+        src_pt = None
+        dst_pt = None
+        for key in ("nose", "left_ear", "right_ear"):
+            if key in src_lm and key in dst_lm:
+                src_pt = src_lm[key]
+                dst_pt = dst_lm[key]
+                break
+
+        if src_pt is None or dst_pt is None:
+            return mask  # can't warp, return as-is
+
+        # Translation in pixels
+        dx = (dst_pt[0] - src_pt[0]) * width
+        dy = (dst_pt[1] - src_pt[1]) * height
+
+        # Apply translation via affine warp
+        M = np.float32([[1, 0, dx], [0, 1, dy]])
+        warped = cv2.warpAffine(mask, M, (width, height), borderValue=0)
+        return warped
+
+
+# ---------------------------------------------------------------------------
+# HairSegmenter
+# ---------------------------------------------------------------------------
+
 
 class HairSegmenter:
     """Wraps MediaPipe Tasks ImageSegmenter with the hair_segmenter model.

@@ -1,14 +1,19 @@
 """
-HairGuard Debug View
-====================
-Live camera feed with overlaid skeleton landmarks, detection zones, and state info.
+HairGuard Debug View  (v2)
+==========================
+Live camera feed with v2 detection pipeline overlays:
+  - Hand skeleton (21 landmarks, color-coded)
+  - Fingertip highlights (thumb + index)
+  - Pinch line with distance label
+  - Hair zone (forehead polyline, ear vertical bounds)
+  - Pose landmarks (ears, nose, shoulders)
+  - Status panel (state, alert, pinch ratio, zone, grip, FPS)
 
 Run with:
     python -m hairguard.debugview
     python -m hairguard.debugview --camera 1
 
-Press 'q' or ESC to quit.
-Press 'c' to cycle through cameras.
+Controls: q / ESC to quit, c to cycle cameras.
 """
 
 from __future__ import annotations
@@ -24,6 +29,14 @@ from hairguard.analyzer import GestureAnalyzer, AnalysisResult
 from hairguard.camera import CameraManager
 from hairguard.config import Config
 from hairguard.detector import PoseDetector, PoseResult, Landmark
+from hairguard.face_detector import FaceDetector, FaceResult
+from hairguard.hand_detector import (
+    HandDetector,
+    HandResult,
+    THUMB_TIP,
+    INDEX_TIP,
+)
+from hairguard.head_zone import HairZone
 
 # ---------------------------------------------------------------------------
 # Color palette (BGR)
@@ -39,421 +52,366 @@ COLOR_GRAY   = (160, 160, 160)
 COLOR_CYAN   = (200, 200, 0)
 COLOR_ORANGE = (0, 140, 255)
 
-# Panel colors by state
-_STATE_COLORS: dict[str, tuple[int, int, int]] = {
+# State -> background panel color
+_STATE_BG: dict[str, tuple[int, int, int]] = {
     "IDLE":      (30, 100, 30),
     "TRIGGERED": (0, 130, 140),
     "ALERTING":  (30, 30, 140),
     "COOLDOWN":  (110, 60, 20),
 }
 
-_STATE_LABEL_COLORS: dict[str, tuple[int, int, int]] = {
+# State -> text label color
+_STATE_FG: dict[str, tuple[int, int, int]] = {
     "IDLE":      COLOR_GREEN,
     "TRIGGERED": COLOR_YELLOW,
     "ALERTING":  COLOR_RED,
-    "COOLDOWN":  COLOR_BLUE,
-}
-
-# Landmark display info: (label, role)
-_LANDMARK_META: dict[str, tuple[str, str]] = {
-    "left_wrist":    ("L.Wrist",    "wrist"),
-    "right_wrist":   ("R.Wrist",    "wrist"),
-    "nose":          ("Nose",       "head"),
-    "left_ear":      ("L.Ear",      "ear"),
-    "right_ear":     ("R.Ear",      "ear"),
-    "left_shoulder": ("L.Shoulder", "shoulder"),
-    "right_shoulder":("R.Shoulder", "shoulder"),
+    "COOLDOWN":  COLOR_ORANGE,
 }
 
 # Font settings
-_FONT      = cv2.FONT_HERSHEY_SIMPLEX
-_FONT_SM   = 0.45
-_FONT_MD   = 0.55
-_FONT_LG   = 0.70
-_THICKNESS = 1
+_FONT     = cv2.FONT_HERSHEY_SIMPLEX
+_FONT_SM  = 0.45
+_FONT_MD  = 0.55
+_FONT_LG  = 0.70
 
-PANEL_HEIGHT = 130  # pixels reserved at top for status panel
+PANEL_HEIGHT = 150  # pixels reserved at top for status panel
 
-
-# ---------------------------------------------------------------------------
-# Helper: pixel coords from normalized landmark
-# ---------------------------------------------------------------------------
-
-def _px(lm: Landmark, w: int, h: int) -> tuple[int, int]:
-    return (int(lm.x * w), int(lm.y * h))
-
-
-def _euclidean_px(a: tuple[int, int], b: tuple[int, int]) -> float:
-    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+# Hand skeleton connections (MediaPipe hand topology)
+HAND_CONNECTIONS = [
+    (0, 1),  (1, 2),  (2, 3),  (3, 4),        # thumb
+    (0, 5),  (5, 6),  (6, 7),  (7, 8),         # index
+    (0, 9),  (9, 10), (10, 11),(11, 12),        # middle
+    (0, 13),(13, 14),(14, 15),(15, 16),          # ring
+    (0, 17),(17, 18),(18, 19),(19, 20),          # pinky
+    (5, 9), (9, 13),(13, 17),                   # palm
+]
 
 
 # ---------------------------------------------------------------------------
-# Drawing helpers
+# Tiny helpers
 # ---------------------------------------------------------------------------
 
-def _draw_text_with_shadow(
+def _px(x: float, y: float, w: int, h: int) -> tuple[int, int]:
+    """Convert normalized (x, y) to pixel coordinates."""
+    return (int(x * w), int(y * h))
+
+
+def _lm_px(lm: Landmark, w: int, h: int) -> tuple[int, int]:
+    return _px(lm.x, lm.y, w, h)
+
+
+def _text_shadow(
     img: np.ndarray,
     text: str,
     pos: tuple[int, int],
-    font_scale: float,
+    scale: float,
     color: tuple[int, int, int],
     thickness: int = 1,
 ) -> None:
-    """Draw text with a dark shadow for readability on any background."""
     x, y = pos
-    cv2.putText(img, text, (x + 1, y + 1), _FONT, font_scale, COLOR_BLACK, thickness + 1, cv2.LINE_AA)
-    cv2.putText(img, text, (x, y), _FONT, font_scale, color, thickness, cv2.LINE_AA)
+    cv2.putText(img, text, (x + 1, y + 1), _FONT, scale, COLOR_BLACK, thickness + 1, cv2.LINE_AA)
+    cv2.putText(img, text, (x, y), _FONT, scale, color, thickness, cv2.LINE_AA)
 
 
-def _draw_landmark_dot(
+# ---------------------------------------------------------------------------
+# draw_hand_skeletons
+# ---------------------------------------------------------------------------
+
+def draw_hand_skeletons(
     img: np.ndarray,
-    pt: tuple[int, int],
-    label: str,
-    role: str,
-    wrist_color: tuple[int, int, int],
-    confidence: float,
+    hands: list[HandResult],
+    result: AnalysisResult,
+    pinch_threshold: float,
 ) -> None:
-    """Draw a labeled circle for one landmark."""
-    if role == "head":
-        color = COLOR_CYAN
-        radius = 7
-    elif role == "wrist":
-        color = wrist_color
-        radius = 8
-    elif role == "ear":
-        color = COLOR_ORANGE
-        radius = 7
+    """Draw all 21 landmarks + connections for every detected hand."""
+    h, w = img.shape[:2]
+
+    state = result.state
+    if state == "ALERTING":
+        base_color = COLOR_RED
+    elif state in ("TRIGGERED", "COOLDOWN"):
+        base_color = COLOR_YELLOW
     else:
-        color = COLOR_GRAY
-        radius = 6
+        base_color = COLOR_GREEN
 
-    cv2.circle(img, pt, radius, COLOR_BLACK, -1)
-    cv2.circle(img, pt, radius, color, 2)
+    for hand in hands:
+        lms = hand.landmarks
 
-    conf_text = f"{confidence:.2f}"
-    lx = pt[0] + radius + 4
-    ly = pt[1] + 4
-    _draw_text_with_shadow(img, f"{label} ({conf_text})", (lx, ly), _FONT_SM, color)
+        # --- Skeleton connections ---
+        for a, b in HAND_CONNECTIONS:
+            if a not in lms or b not in lms:
+                continue
+            pa = _px(lms[a].x, lms[a].y, w, h)
+            pb = _px(lms[b].x, lms[b].y, w, h)
+            cv2.line(img, pa, pb, base_color, 1, cv2.LINE_AA)
+
+        # --- All 21 landmark dots ---
+        for idx, lm in lms.items():
+            pt = _px(lm.x, lm.y, w, h)
+            if idx in (THUMB_TIP, INDEX_TIP):
+                continue  # drawn separately below
+            cv2.circle(img, pt, 3, base_color, -1, cv2.LINE_AA)
+
+        # --- Fingertip highlights ---
+        for tip_idx in (THUMB_TIP, INDEX_TIP):
+            if tip_idx not in lms:
+                continue
+            lm = lms[tip_idx]
+            pt = _px(lm.x, lm.y, w, h)
+
+            if result.fingertips_in_zone and result.should_alert:
+                tip_color = COLOR_RED
+            elif result.fingertips_in_zone:
+                tip_color = COLOR_YELLOW
+            else:
+                tip_color = COLOR_GREEN
+
+            cv2.circle(img, pt, 8, COLOR_BLACK, -1, cv2.LINE_AA)
+            cv2.circle(img, pt, 8, tip_color, 2, cv2.LINE_AA)
+            cv2.circle(img, pt, 4, tip_color, -1, cv2.LINE_AA)
 
 
-def _draw_ear_zone(
+# ---------------------------------------------------------------------------
+# draw_pinch_indicator
+# ---------------------------------------------------------------------------
+
+def draw_pinch_indicator(
     img: np.ndarray,
-    ear_pt: tuple[int, int],
-    radius_px: int,
+    hands: list[HandResult],
+    pinch_threshold: float,
 ) -> None:
-    """Draw a dashed-style detection-threshold circle around an ear."""
-    # OpenCV has no built-in dashed circle; approximate with small arc segments.
-    n_segments = 20
-    for i in range(n_segments):
-        if i % 2 == 0:  # draw every other segment to simulate dashing
-            angle_start = (360 / n_segments) * i
-            angle_end   = angle_start + (360 / n_segments)
-            cv2.ellipse(
-                img,
-                ear_pt,
-                (radius_px, radius_px),
-                0,
-                angle_start,
-                angle_end,
-                COLOR_ORANGE,
-                1,
-                cv2.LINE_AA,
-            )
+    """Draw a line between thumb and index tip with the pinch_ratio label."""
+    if not hands:
+        return
 
+    h, w = img.shape[:2]
 
-def _draw_shoulder_line(
-    img: np.ndarray,
-    left_pt: tuple[int, int],
-    right_pt: tuple[int, int],
-) -> None:
-    """Draw the shoulder baseline used for distance normalization."""
-    cv2.line(img, left_pt, right_pt, COLOR_GRAY, 1, cv2.LINE_AA)
-    mid = ((left_pt[0] + right_pt[0]) // 2, (left_pt[1] + right_pt[1]) // 2)
-    _draw_text_with_shadow(img, "shoulder baseline", (mid[0] - 55, mid[1] - 6), _FONT_SM, COLOR_GRAY)
-
-
-def _draw_hand_head_lines(
-    img: np.ndarray,
-    wrists: dict[str, tuple[int, int]],
-    ears: dict[str, tuple[int, int]],
-    lm: dict[str, Landmark],
-    shoulder_dist_px: Optional[float],
-    distance_threshold: float,
-    min_confidence: float,
-) -> dict[str, float]:
-    """
-    Draw lines from wrists to their nearest ear when wrist is near head.
-    Returns a dict of "wrist_name -> min_ratio" for on-frame labeling.
-    """
-    ratios: dict[str, float] = {}
-
-    for wname, wpt in wrists.items():
-        wlm = lm.get(wname)
-        if wlm is None or wlm.confidence < min_confidence:
+    for hand in hands:
+        lms = hand.landmarks
+        if THUMB_TIP not in lms or INDEX_TIP not in lms:
             continue
 
-        best_ratio: Optional[float] = None
-        best_ept: Optional[tuple[int, int]] = None
-        best_ename: Optional[str] = None
+        t = lms[THUMB_TIP]
+        i = lms[INDEX_TIP]
+        pt_thumb = _px(t.x, t.y, w, h)
+        pt_index = _px(i.x, i.y, w, h)
 
-        for ename, ept in ears.items():
-            elm = lm.get(ename)
-            if elm is None or elm.confidence < min_confidence:
-                continue
+        ratio = hand.pinch_ratio()
+        line_color = COLOR_RED if ratio < pinch_threshold else COLOR_GREEN
 
-            if shoulder_dist_px and shoulder_dist_px > 1e-6:
-                # Normalized ratio (same logic as analyzer)
-                wlm_n = lm[wname]
-                elm_n = lm[ename]
-                norm_dist = math.sqrt(
-                    (wlm_n.x - elm_n.x) ** 2 + (wlm_n.y - elm_n.y) ** 2
-                )
-                # Shoulder dist is in normalized space too
-                left_sh = lm.get("left_shoulder")
-                right_sh = lm.get("right_shoulder")
-                if left_sh and right_sh:
-                    sh_norm = math.sqrt(
-                        (left_sh.x - right_sh.x) ** 2 + (left_sh.y - right_sh.y) ** 2
-                    )
-                    ratio = norm_dist / sh_norm if sh_norm > 1e-6 else 999.0
-                else:
-                    ratio = 999.0
-            else:
-                ratio = _euclidean_px(wpt, ept) / (shoulder_dist_px or 1.0)
+        cv2.line(img, pt_thumb, pt_index, line_color, 1, cv2.LINE_AA)
 
-            if best_ratio is None or ratio < best_ratio:
-                best_ratio = ratio
-                best_ept = ept
-                best_ename = ename
-
-        if best_ratio is not None and best_ept is not None:
-            ratios[wname] = best_ratio
-            if best_ratio < distance_threshold:
-                # Hand near head — draw line and ratio label
-                color = COLOR_RED if best_ratio < distance_threshold * 0.75 else COLOR_YELLOW
-                cv2.line(img, wpt, best_ept, color, 1, cv2.LINE_AA)
-                mid = ((wpt[0] + best_ept[0]) // 2, (wpt[1] + best_ept[1]) // 2)
-                ratio_text = f"{best_ratio:.2f}"
-                _draw_text_with_shadow(img, ratio_text, (mid[0] + 4, mid[1]), _FONT_MD, color)
-            else:
-                # Still show ratio but in neutral color
-                mid = ((wpt[0] + best_ept[0]) // 2 if best_ept else wpt[0],
-                       (wpt[1] + best_ept[1]) // 2 if best_ept else wpt[1])
-                ratio_text = f"{best_ratio:.2f}"
-                _draw_text_with_shadow(img, ratio_text, (wpt[0] + 10, wpt[1] - 10), _FONT_SM, COLOR_GRAY)
-
-    return ratios
+        mid_x = (pt_thumb[0] + pt_index[0]) // 2
+        mid_y = (pt_thumb[1] + pt_index[1]) // 2
+        label = f"pr:{ratio:.2f}"
+        _text_shadow(img, label, (mid_x + 4, mid_y - 4), _FONT_SM, line_color)
 
 
 # ---------------------------------------------------------------------------
-# Status panel
+# draw_hair_zone
 # ---------------------------------------------------------------------------
 
-def _draw_status_panel(
+def draw_hair_zone(
     img: np.ndarray,
-    state: str,
-    should_alert: bool,
-    hand_near_head: bool,
-    min_ratio: Optional[float],
+    face: FaceResult,
+    pose: PoseResult,
+    hair_zone_offset: float,
+) -> None:
+    """Visualize the hair zone: forehead polyline + ear vertical bounds."""
+    h, w = img.shape[:2]
+
+    zone = HairZone(face, pose, hair_zone_offset)
+    x_min, x_max, y_ceiling, y_forehead_avg = zone.bounds
+
+    # --- Forehead polyline (cyan) ---
+    forehead_pts = zone.forehead_line
+    if len(forehead_pts) >= 2:
+        pixel_pts = [_px(x, y, w, h) for x, y in forehead_pts]
+        pts_arr = np.array(pixel_pts, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(img, [pts_arr], isClosed=False, color=COLOR_CYAN, thickness=2, lineType=cv2.LINE_AA)
+        # Optional: semi-transparent fill above forehead line
+        # Build a filled region: forehead points + top border
+        top_left  = (pixel_pts[0][0],  0)
+        top_right = (pixel_pts[-1][0], 0)
+        fill_pts = [top_left] + pixel_pts + [top_right]
+        fill_arr = np.array(fill_pts, dtype=np.int32)
+        overlay = img.copy()
+        cv2.fillPoly(overlay, [fill_arr], (200, 200, 0))
+        cv2.addWeighted(overlay, 0.08, img, 0.92, 0, img)
+
+    # --- Ear vertical bounds (dashed vertical lines) ---
+    for norm_x in (x_min, x_max):
+        px_x = int(norm_x * w)
+        # Draw dashed line manually
+        dash_len = 8
+        gap_len  = 6
+        y = PANEL_HEIGHT
+        while y < h:
+            y_end = min(y + dash_len, h)
+            cv2.line(img, (px_x, y), (px_x, y_end), COLOR_ORANGE, 1, cv2.LINE_AA)
+            y += dash_len + gap_len
+
+    # --- Ceiling line (subtle) ---
+    ceiling_y = int(y_ceiling * h)
+    cv2.line(img, (int(x_min * w), ceiling_y), (int(x_max * w), ceiling_y),
+             (100, 100, 200), 1, cv2.LINE_AA)
+
+
+# ---------------------------------------------------------------------------
+# draw_pose_landmarks
+# ---------------------------------------------------------------------------
+
+def draw_pose_landmarks(img: np.ndarray, pose: PoseResult) -> None:
+    """Draw ears, nose, and shoulders as small labeled dots."""
+    if not pose.detected:
+        return
+
+    h, w = img.shape[:2]
+    lm = pose.landmarks
+
+    _POSE_META = {
+        "nose":           ("Nose",   COLOR_CYAN,   7),
+        "left_ear":       ("L.Ear",  COLOR_ORANGE, 7),
+        "right_ear":      ("R.Ear",  COLOR_ORANGE, 7),
+        "left_shoulder":  ("L.Sh",   COLOR_GRAY,   6),
+        "right_shoulder": ("R.Sh",   COLOR_GRAY,   6),
+    }
+
+    # Shoulder line baseline
+    ls = lm.get("left_shoulder")
+    rs = lm.get("right_shoulder")
+    if ls is not None and rs is not None:
+        lspt = _lm_px(ls, w, h)
+        rspt = _lm_px(rs, w, h)
+        cv2.line(img, lspt, rspt, COLOR_GRAY, 1, cv2.LINE_AA)
+        mid = ((lspt[0] + rspt[0]) // 2, (lspt[1] + rspt[1]) // 2)
+        _text_shadow(img, "shoulder baseline", (mid[0] - 55, mid[1] - 6), _FONT_SM, COLOR_GRAY)
+
+    for name, (label, color, radius) in _POSE_META.items():
+        landmark = lm.get(name)
+        if landmark is None:
+            continue
+        pt = _lm_px(landmark, w, h)
+        cv2.circle(img, pt, radius, COLOR_BLACK, -1)
+        cv2.circle(img, pt, radius, color, 2)
+        conf_txt = f"{label}({landmark.confidence:.2f})"
+        _text_shadow(img, conf_txt, (pt[0] + radius + 3, pt[1] + 4), _FONT_SM, color)
+
+
+# ---------------------------------------------------------------------------
+# draw_status_panel
+# ---------------------------------------------------------------------------
+
+def draw_status_panel(
+    img: np.ndarray,
+    result: AnalysisResult,
     fps: float,
-    lm: dict[str, Landmark],
-    distance_threshold: float,
+    pinch_threshold: float,
 ) -> None:
     """Render the status panel at the top of the frame."""
     h, w = img.shape[:2]
-    panel_color = _STATE_COLORS.get(state, (40, 40, 40))
+    state = result.state
+    panel_bg = _STATE_BG.get(state, (40, 40, 40))
+    state_fg = _STATE_FG.get(state, COLOR_WHITE)
 
-    # Semi-transparent panel background
+    # Semi-transparent background
     overlay = img.copy()
-    cv2.rectangle(overlay, (0, 0), (w, PANEL_HEIGHT), panel_color, -1)
+    cv2.rectangle(overlay, (0, 0), (w, PANEL_HEIGHT), panel_bg, -1)
     cv2.addWeighted(overlay, 0.80, img, 0.20, 0, img)
-
-    # Divider line
     cv2.line(img, (0, PANEL_HEIGHT), (w, PANEL_HEIGHT), COLOR_WHITE, 1)
 
-    state_color = _STATE_LABEL_COLORS.get(state, COLOR_WHITE)
-    col1_x = 10
-    col2_x = w // 2 + 10
-    line_h = 22
+    col1 = 10
+    col2 = w // 2 + 10
+    lh   = 22   # line height
 
-    # --- Column 1 ---
-    y = 22
-    cv2.putText(img, "HairGuard Debug View", (col1_x, y), _FONT, _FONT_LG, COLOR_WHITE, 1, cv2.LINE_AA)
+    # ---- Title ----
+    cv2.putText(img, "HairGuard Debug View  v2", (col1, 22), _FONT, _FONT_LG, COLOR_WHITE, 1, cv2.LINE_AA)
 
-    y += line_h + 4
-    cv2.putText(img, "State:", (col1_x, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, state, (col1_x + 55, y), _FONT, _FONT_MD, state_color, 2, cv2.LINE_AA)
+    # ---- Column 1 ----
+    y = 22 + lh + 2
 
-    y += line_h
-    alert_text  = "YES" if should_alert else "NO"
-    alert_color = COLOR_RED if should_alert else COLOR_GREEN
-    cv2.putText(img, "Alert:", (col1_x, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, alert_text, (col1_x + 55, y), _FONT, _FONT_MD, alert_color, 2, cv2.LINE_AA)
+    # State
+    cv2.putText(img, "State:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, state,    (col1 + 55, y), _FONT, _FONT_MD, state_fg, 2, cv2.LINE_AA)
+    y += lh
 
-    y += line_h
-    hand_text  = "YES" if hand_near_head else "NO"
-    hand_color = COLOR_YELLOW if hand_near_head else COLOR_WHITE
-    cv2.putText(img, "Hand near head:", (col1_x, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, hand_text, (col1_x + 125, y), _FONT, _FONT_MD, hand_color, 1, cv2.LINE_AA)
+    # Alert
+    alert_txt   = "YES" if result.should_alert else "NO"
+    alert_color = COLOR_RED if result.should_alert else COLOR_GREEN
+    cv2.putText(img, "Alert:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, alert_txt, (col1 + 55, y), _FONT, _FONT_MD, alert_color, 2, cv2.LINE_AA)
+    y += lh
 
-    y += line_h
-    ratio_text  = f"{min_ratio:.3f}" if min_ratio is not None else "N/A"
-    ratio_color = COLOR_RED if (min_ratio is not None and min_ratio < distance_threshold) else COLOR_WHITE
-    cv2.putText(img, "Min ratio:", (col1_x, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, ratio_text, (col1_x + 80, y), _FONT, _FONT_MD, ratio_color, 1, cv2.LINE_AA)
+    # Hand near head
+    hnh_txt   = "YES" if result.hand_near_head else "NO"
+    hnh_color = COLOR_YELLOW if result.hand_near_head else COLOR_WHITE
+    cv2.putText(img, "Hand near head:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, hnh_txt, (col1 + 125, y), _FONT, _FONT_MD, hnh_color, 1, cv2.LINE_AA)
+    y += lh
 
-    # --- Column 2 ---
-    y = 22 + line_h + 4
-    cv2.putText(img, f"FPS: {fps:.1f}", (col2_x, y), _FONT, _FONT_MD, COLOR_CYAN, 1, cv2.LINE_AA)
+    # Fingertips in zone
+    fiz_txt   = "YES" if result.fingertips_in_zone else "NO"
+    fiz_color = COLOR_YELLOW if result.fingertips_in_zone else COLOR_WHITE
+    cv2.putText(img, "Fingertips in zone:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, fiz_txt, (col1 + 150, y), _FONT, _FONT_MD, fiz_color, 1, cv2.LINE_AA)
+    y += lh
 
-    y += line_h
-    cv2.putText(img, "Landmark confidence:", (col2_x, y), _FONT, _FONT_SM, COLOR_GRAY, 1, cv2.LINE_AA)
+    # Gripping
+    grip_txt   = "YES" if result.is_gripping else "NO"
+    grip_color = COLOR_YELLOW if result.is_gripping else COLOR_WHITE
+    cv2.putText(img, "Gripping:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, grip_txt, (col1 + 72, y), _FONT, _FONT_MD, grip_color, 1, cv2.LINE_AA)
 
-    conf_names = [
-        ("L.Wrst",  "left_wrist"),
-        ("R.Wrst",  "right_wrist"),
-        ("Nose",    "nose"),
-        ("L.Ear",   "left_ear"),
-        ("R.Ear",   "right_ear"),
-        ("L.Shldr", "left_shoulder"),
-    ]
-    for i, (label, key) in enumerate(conf_names):
-        conf = lm[key].confidence if key in lm else 0.0
-        col = COLOR_GREEN if conf >= 0.5 else COLOR_RED
-        col_x = col2_x + (i % 3) * 95
-        row_y = y + line_h + (i // 3) * line_h
-        cv2.putText(img, f"{label}:{conf:.2f}", (col_x, row_y), _FONT, _FONT_SM, col, 1, cv2.LINE_AA)
+    # ---- Column 2 ----
+    y = 22 + lh + 2
 
-    # Key hints at bottom-right
+    # FPS
+    cv2.putText(img, f"FPS: {fps:.1f}", (col2, y), _FONT, _FONT_MD, COLOR_CYAN, 1, cv2.LINE_AA)
+    y += lh
+
+    # Pinch ratio
+    if result.pinch_distance is not None:
+        pr_val   = result.pinch_distance
+        pr_color = COLOR_RED if pr_val < pinch_threshold else COLOR_GREEN
+        pr_txt   = f"{pr_val:.3f}"
+    else:
+        pr_val   = None
+        pr_color = COLOR_GRAY
+        pr_txt   = "N/A"
+    cv2.putText(img, "Pinch ratio:", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, pr_txt, (col2 + 95, y), _FONT, _FONT_MD, pr_color, 1, cv2.LINE_AA)
+    y += lh
+
+    # Key hints
     hint = "Q/ESC: quit   C: cycle camera"
     (tw, _), _ = cv2.getTextSize(hint, _FONT, _FONT_SM, 1)
     cv2.putText(img, hint, (w - tw - 8, PANEL_HEIGHT - 6), _FONT, _FONT_SM, COLOR_GRAY, 1, cv2.LINE_AA)
 
 
 # ---------------------------------------------------------------------------
-# Frame overlay — main drawing pass
-# ---------------------------------------------------------------------------
-
-def draw_overlay(
-    frame: np.ndarray,
-    pose: PoseResult,
-    result: AnalysisResult,
-    fps: float,
-    config: Config,
-) -> np.ndarray:
-    """Composite all debug overlays onto *a copy of* frame and return it."""
-    img = frame.copy()
-    h, w = img.shape[:2]
-
-    lm = pose.landmarks
-    distance_threshold: float = config.get("detection", "distance_threshold")
-    min_confidence: float     = config.get("detection", "min_confidence")
-
-    # Determine wrist color based on current state
-    state = result.state
-    if state == "ALERTING":
-        wrist_color = COLOR_RED
-    elif state in ("TRIGGERED", "COOLDOWN"):
-        wrist_color = COLOR_YELLOW
-    else:
-        wrist_color = COLOR_GREEN
-
-    # Compute pixel positions for available landmarks
-    pts: dict[str, tuple[int, int]] = {}
-    for name, lmk in lm.items():
-        pts[name] = _px(lmk, w, h)
-
-    # ---- Shoulder line ----
-    if "left_shoulder" in pts and "right_shoulder" in pts:
-        _draw_shoulder_line(img, pts["left_shoulder"], pts["right_shoulder"])
-
-    # ---- Shoulder distance (normalized space) for zone radius ----
-    shoulder_dist_norm: Optional[float] = None
-    shoulder_dist_px: Optional[float]   = None
-    left_sh  = lm.get("left_shoulder")
-    right_sh = lm.get("right_shoulder")
-    if (
-        left_sh is not None and right_sh is not None
-        and left_sh.confidence >= min_confidence
-        and right_sh.confidence >= min_confidence
-    ):
-        shoulder_dist_norm = math.sqrt(
-            (left_sh.x - right_sh.x) ** 2 + (left_sh.y - right_sh.y) ** 2
-        )
-        # Pixel-space shoulder distance (for zone visualization)
-        shoulder_dist_px = _euclidean_px(pts["left_shoulder"], pts["right_shoulder"])
-
-    # ---- Head detection zones (ears + nose) ----
-    for head_name in ("left_ear", "right_ear", "nose"):
-        if head_name not in pts:
-            continue
-        head_lm = lm.get(head_name)
-        if head_lm is None or head_lm.confidence < min_confidence:
-            continue
-        if shoulder_dist_px is not None:
-            zone_radius = int(distance_threshold * shoulder_dist_px)
-            _draw_ear_zone(img, pts[head_name], zone_radius)
-
-    # ---- Hand-to-head connection lines + ratio labels ----
-    wrist_pts = {
-        k: v for k, v in pts.items()
-        if "wrist" in k
-        and lm.get(k) is not None
-        and lm[k].confidence >= min_confidence
-    }
-    ear_pts = {
-        k: v for k, v in pts.items()
-        if ("ear" in k or k == "nose")
-        and lm.get(k) is not None
-        and lm[k].confidence >= min_confidence
-    }
-
-    ratios = _draw_hand_head_lines(
-        img,
-        wrist_pts,
-        ear_pts,
-        lm,
-        shoulder_dist_px,
-        distance_threshold,
-        min_confidence,
-    )
-
-    # ---- Landmark dots with labels ----
-    for name, (label, role) in _LANDMARK_META.items():
-        if name not in pts:
-            continue
-        lmk = lm.get(name)
-        if lmk is None:
-            continue
-        _draw_landmark_dot(img, pts[name], label, role, wrist_color, lmk.confidence)
-
-    # ---- Min ratio across all wrist-ear pairs ----
-    min_ratio: Optional[float] = min(ratios.values()) if ratios else None
-
-    # ---- Status panel ----
-    _draw_status_panel(img, state, result.should_alert, result.hand_near_head, min_ratio, fps, lm, distance_threshold)
-
-    return img
-
-
-# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
-def run(camera_index: int = 0) -> None:
-    """Open the debug view window. Blocks until 'q'/ESC is pressed."""
-    config  = Config()
-    default_camera = camera_index if camera_index is not None else config.get("camera")
+def main(camera: Optional[int] = None) -> None:
+    """Open the HairGuard debug view window. Blocks until 'q'/ESC is pressed."""
+    config = Config()
+    pinch_threshold: float = config.get("detection", "pinch_threshold")
+    min_confidence: float  = config.get("detection", "min_confidence")
+    hair_zone_offset: float = config.get("detection", "hair_zone_offset")
 
-    print("[debugview] Initializing pose detector...")
-    detector = PoseDetector(min_confidence=config.get("detection", "min_confidence"))
+    default_camera = camera if camera is not None else (config.get("camera") or 0)
+
+    print("[debugview] Initializing detectors...")
+    pose_det = PoseDetector(min_confidence=min_confidence)
+    hand_det = HandDetector(max_hands=2, min_confidence=min_confidence)
+    face_det = FaceDetector(min_confidence=min_confidence)
     analyzer = GestureAnalyzer(config)
 
     available_cameras = CameraManager.list_cameras()
     camera_indices = [c["index"] for c in available_cameras] or [0]
     try:
-        current_cam_slot = camera_indices.index(default_camera)
-    except ValueError:
+        current_cam_slot = camera_indices.index(int(default_camera))
+    except (ValueError, TypeError):
         current_cam_slot = 0
 
     def open_camera(idx: int) -> CameraManager:
@@ -480,10 +438,15 @@ def run(camera_index: int = 0) -> None:
                 continue
 
             h, w = frame.shape[:2]
-            pose   = detector.process(frame)
-            result = analyzer.analyze(pose, h, w)
+            ts = int(time.monotonic() * 1000)
 
-            # FPS tracking
+            pose  = pose_det.process(frame, timestamp_ms=ts)
+            hands = hand_det.detect(frame, timestamp_ms=ts + 1)
+            face  = face_det.detect(frame, timestamp_ms=ts + 2)
+
+            result = analyzer.analyze(pose, hands, face, h, w)
+
+            # FPS
             fps_counter += 1
             now = time.monotonic()
             elapsed = now - fps_ts
@@ -492,14 +455,21 @@ def run(camera_index: int = 0) -> None:
                 fps_counter = 0
                 fps_ts      = now
 
-            display = draw_overlay(frame, pose, result, fps_value, config)
+            # --- Build display frame ---
+            display = frame.copy()
+
+            draw_hair_zone(display, face, pose, hair_zone_offset)
+            draw_pose_landmarks(display, pose)
+            draw_hand_skeletons(display, hands, result, pinch_threshold)
+            draw_pinch_indicator(display, hands, pinch_threshold)
+            draw_status_panel(display, result, fps_value, pinch_threshold)
+
             cv2.imshow("HairGuard Debug View", display)
 
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord('q'), 27):  # 'q' or ESC
+            if key in (ord('q'), 27):
                 break
             elif key == ord('c'):
-                # Cycle to next camera
                 cam.release()
                 current_cam_slot = (current_cam_slot + 1) % len(camera_indices)
                 next_idx = camera_indices[current_cam_slot]
@@ -507,13 +477,14 @@ def run(camera_index: int = 0) -> None:
                     cam = open_camera(next_idx)
                 except RuntimeError as exc:
                     print(f"[debugview] Could not open camera {next_idx}: {exc}")
-                    # Try to stay on current one — reopen previous
                     current_cam_slot = (current_cam_slot - 1) % len(camera_indices)
                     cam = open_camera(camera_indices[current_cam_slot])
 
     finally:
         cam.release()
-        detector.close()
+        pose_det.close()
+        hand_det.close()
+        face_det.close()
         cv2.destroyAllWindows()
         print("[debugview] Closed.")
 
@@ -522,19 +493,10 @@ def run(camera_index: int = 0) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(camera: Optional[int] = None) -> None:
-    """Public entry point used by CLI and direct module execution."""
-    from hairguard.config import Config as _Config
-
-    cfg = _Config()
-    cam_idx = camera if camera is not None else cfg.get("camera")
-    run(camera_index=cam_idx)
-
-
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="HairGuard Debug View")
+    parser = argparse.ArgumentParser(description="HairGuard Debug View v2")
     parser.add_argument("--camera", type=int, default=None, metavar="N",
                         help="Camera index to use (default: from config)")
     args = parser.parse_args()

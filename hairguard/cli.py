@@ -1,4 +1,5 @@
 import argparse
+import subprocess
 import sys
 import time
 
@@ -38,9 +39,40 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
-    # Stage 6 will wire this to HairGuardApp.
-    # For now we accept --camera and --background but do nothing.
-    print("Not yet implemented")
+    # --background: re-launch self as a detached background process
+    if args.background:
+        _start_background(args)
+        return
+
+    from hairguard.app import HairGuardApp
+
+    app = HairGuardApp(camera_index=args.camera, background=False)
+    app.run()
+
+
+def _start_background(args: argparse.Namespace) -> None:
+    """Re-launch 'hairguard start' (without --background) as a detached process."""
+    import os
+
+    cmd = [sys.executable, "-m", "hairguard", "start"]
+    if args.camera is not None:
+        cmd += ["--camera", str(args.camera)]
+
+    if sys.platform == "win32":
+        CREATE_NO_WINDOW = 0x08000000
+        proc = subprocess.Popen(
+            cmd,
+            creationflags=CREATE_NO_WINDOW,
+            close_fds=True,
+        )
+    else:
+        proc = subprocess.Popen(
+            cmd,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    print(f"HairGuard запущен в фоне (PID {proc.pid})")
 
 
 def cmd_stop(_args: argparse.Namespace) -> None:

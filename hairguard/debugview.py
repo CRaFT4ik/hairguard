@@ -441,7 +441,7 @@ def main(camera: Optional[int] = None) -> None:
     fps_counter = 0
     fps_value   = 0.0
     fps_ts      = time.monotonic()
-    zone_smoother = HairZoneSmoother(alpha=0.3)
+    zone_smoother = HairZoneSmoother(alpha=0.15)
 
     # --- CSV recording state ---
     import csv

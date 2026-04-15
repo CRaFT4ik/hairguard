@@ -87,7 +87,7 @@ class GestureAnalyzer:
         self._consecutive_positive: int = 0
 
         # Temporal smoothing for hair zone
-        self._zone_smoother = HairZoneSmoother(alpha=0.3)
+        self._zone_smoother = HairZoneSmoother(alpha=0.15)
 
         # State machine
         self._state = _State.IDLE

@@ -115,7 +115,7 @@ class HairZone:
         else:
             self._head_center = (0.5, 0.4)  # last resort
 
-        self._head_scale = max(ear_distance, self._shoulder_distance * 0.45)
+        self._head_scale = max(ear_distance, self._shoulder_distance * 0.60)
 
         # --- Step 4: Up vector (toward crown) ---
         hh = self._head_horizontal
@@ -259,7 +259,7 @@ class HairZoneSmoother:
     to eliminate per-frame jitter from landmark noise.
     """
 
-    def __init__(self, alpha: float = 0.3) -> None:
+    def __init__(self, alpha: float = 0.15) -> None:
         self._alpha = alpha
         self._prev_center: Optional[tuple[float, float]] = None
         self._prev_sw: Optional[float] = None

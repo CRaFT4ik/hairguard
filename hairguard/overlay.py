@@ -40,6 +40,18 @@ class TkOverlay:
         self._opacity: float = float(config.get("alert", "opacity") or 0.7)
         self._text_color: str = str(config.get("alert", "text_color") or "#ffffff")
 
+        # Enable DPI awareness on Windows before creating any tk windows
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
+            except Exception:
+                try:
+                    import ctypes
+                    ctypes.windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
+
         self._root = tk.Tk()
         self._root.withdraw()  # hide root; we use a Toplevel for the overlay
 

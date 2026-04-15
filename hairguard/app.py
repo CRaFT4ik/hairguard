@@ -33,7 +33,6 @@ class HairGuardApp:
         from hairguard.camera import CameraManager
         from hairguard.detector import PoseDetector
         from hairguard.hand_detector import HandDetector
-        from hairguard.face_detector import FaceDetector
         from hairguard.hair_segmenter import HairSegmenter
         from hairguard.analyzer import GestureAnalyzer
         from hairguard.overlay import create_overlay
@@ -64,7 +63,6 @@ class HairGuardApp:
         min_conf: float = float(self._config.get("detection", "min_confidence") or 0.5)
         self._detector = PoseDetector(min_confidence=min_conf)
         self._hand_detector = HandDetector(max_hands=2, min_confidence=min_conf)
-        self._face_detector = FaceDetector(min_confidence=min_conf)
         self._hair_segmenter = HairSegmenter()
         self._analyzer = GestureAnalyzer(self._config)
 
@@ -162,10 +160,6 @@ class HairGuardApp:
             pass
         try:
             self._hand_detector.close()
-        except Exception:
-            pass
-        try:
-            self._face_detector.close()
         except Exception:
             pass
         try:

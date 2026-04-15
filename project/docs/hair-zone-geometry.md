@@ -117,13 +117,13 @@ The hair zone is an ellipse centered above the head center, aligned with the hea
 
 ```
 # Offset from head_center to hair_center (in up_vec direction)
-base_offset = head_scale * 0.5
-pitch_offset_bonus = max(0, 0.3 - pitch_ratio) * head_scale * 0.3
+base_offset = head_scale * 0.7
+pitch_offset_bonus = max(0, 0.3 - pitch_ratio) * head_scale * 0.4
 hair_center = head_center + up_vec * (base_offset + pitch_offset_bonus)
 
 # Ellipse semi-axes
-semi_width = head_scale * 0.55    # along head_horizontal (ear-to-ear direction)
-semi_height = head_scale * 0.6 * pitch_factor   # along up_vec (toward crown)
+semi_width = head_scale * 1.0     # full head width along ear axis
+semi_height = head_scale * 1.2 * pitch_factor   # taller than wide (forehead to nape)
 ```
 
 Note: semi_height > semi_width because hair extends more vertically (forehead to nape) than horizontally.
@@ -197,9 +197,10 @@ The hair zone on the debug view:
 |---|---|---|
 | Shoulder-to-head width ratio | 0.45 | Anthropometric data |
 | Ear distance minimum | `shoulder_distance * 0.2` | Guard against ear foreshortening |
-| Hair center offset | `0.5 * head_scale` | Crown is ~50% above ear midpoint |
-| Ellipse semi-width | `0.55 * head_scale` | Hair width ≈ head width |
-| Ellipse semi-height | `0.6 * head_scale * pitch_factor` | Hair extends more vertically |
+| Hair center offset | `0.7 * head_scale` | Crown is ~70% above ear midpoint |
+| Pitch offset bonus | `max(0, 0.3-pr) * head_scale * 0.4` | Extra shift when leaning forward |
+| Ellipse semi-width | `1.0 * head_scale` | Full head width along ear axis |
+| Ellipse semi-height | `1.2 * head_scale * pitch_factor` | Taller than wide (forehead to nape) |
 | Pitch expansion threshold | 0.3 | Below this pitch_ratio, head is leaning forward |
 | down_vec minimum | `0.05 * head_scale` | Guard for top-down camera |
 | Confidence threshold | 0.5 | For landmark reliability |

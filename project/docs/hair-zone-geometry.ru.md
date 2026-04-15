@@ -117,13 +117,13 @@ pitch_factor = 1.0 + max(0, 0.3 - pitch_ratio) * 1.5
 
 ```
 # Смещение от head_center к hair_center (в направлении up_vec)
-base_offset = head_scale * 0.5
-pitch_offset_bonus = max(0, 0.3 - pitch_ratio) * head_scale * 0.3
+base_offset = head_scale * 0.7
+pitch_offset_bonus = max(0, 0.3 - pitch_ratio) * head_scale * 0.4
 hair_center = head_center + up_vec * (base_offset + pitch_offset_bonus)
 
 # Полуоси эллипса
-semi_width = head_scale * 0.55    # вдоль head_horizontal (направление ухо–ухо)
-semi_height = head_scale * 0.6 * pitch_factor   # вдоль up_vec (в сторону макушки)
+semi_width = head_scale * 1.0     # полная ширина головы вдоль оси ушей
+semi_height = head_scale * 1.2 * pitch_factor   # выше чем шире (от лба до затылка)
 ```
 
 Примечание: semi_height > semi_width, поскольку волосы простираются больше по вертикали (от лба до затылка), чем по горизонтали.
@@ -197,8 +197,9 @@ head_horizontal = normalize(ema(head_horizontal, alpha))
 |---|---|---|
 | Соотношение ширины плеч к ширине головы | 0.45 | Антропометрические данные |
 | Минимальное расстояние между ушами | `shoulder_distance * 0.2` | Защита от перспективного сокращения ушей |
-| Смещение центра волос | `0.5 * head_scale` | Макушка ≈ на 50% выше середины между ушами |
-| Полуширина эллипса | `0.55 * head_scale` | Ширина волос ≈ ширина головы |
+| Смещение центра волос | `0.7 * head_scale` | Макушка ≈ на 70% выше середины между ушами |
+| Бонус смещения при наклоне | `max(0, 0.3-pr) * head_scale * 0.4` | Дополнительный сдвиг при наклоне вперёд |
+| Полуширина эллипса | `1.0 * head_scale` | Полная ширина головы вдоль оси ушей |
 | Полувысота эллипса | `0.6 * head_scale * pitch_factor` | Волосы простираются больше по вертикали |
 | Порог расширения по тангажу | 0.3 | Ниже этого pitch_ratio голова наклонена вперёд |
 | Минимальная длина down_vec | `0.05 * head_scale` | Защита для камеры сверху |

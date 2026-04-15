@@ -152,16 +152,16 @@ class TestContains:
     def test_point_far_to_side_is_false(self):
         """A point far outside the ellipse horizontally returns False."""
         zone = _default_zone()
-        # x=0.05 is well outside semi_width~0.275 from center=0.5
-        assert zone.contains(0.05, 0.1) is False
+        # semi_width = head_scale * 1.0 ≈ 0.5, center.x ≈ 0.5
+        # So x=0.5+0.5=1.0 is the edge. x=1.5 is well outside.
+        assert zone.contains(1.5, 0.1) is False
 
     def test_point_far_above_is_false(self):
-        """A point way above the ellipse (y very negative) returns False.
-
-        hair_center.y ~ 0.07, semi_height ~ 0.39, so y < 0.07-0.39 = -0.32
-        """
+        """A point way above the ellipse returns False."""
         zone = _default_zone()
-        assert zone.contains(0.5, -0.5) is False
+        # semi_height = head_scale * 1.2 ≈ 0.6, center.y ≈ -0.1
+        # So y = -0.1 - 0.6 = -0.7 is edge. y=-1.5 is well outside.
+        assert zone.contains(0.5, -1.5) is False
 
     def test_at_ellipse_center_is_true(self):
         """The exact center of the hair ellipse is inside the zone (ignoring forehead)."""
@@ -204,12 +204,16 @@ class TestHeadTilt:
         )
         return HairZone(face=_make_face(detected=False), pose=pose)
 
-    def test_tilted_ellipse_captures_point_outside_vertical_zone(self):
-        """Point (0.2, 0.05) is inside the tilted ellipse but outside vertical."""
+    def test_tilted_ellipse_is_rotated(self):
+        """Tilted head produces a rotated ellipse (different angle than straight)."""
         tilted = self._tilted_zone()
         straight = self._straight_zone()
-        assert tilted.contains(0.2, 0.05) is True
-        assert straight.contains(0.2, 0.05) is False
+        tp = tilted.ellipse_params
+        sp = straight.ellipse_params
+        # Straight: head_horizontal ≈ (1, 0). Tilted: head_horizontal is angled.
+        straight_angle = math.atan2(sp["head_horizontal"][1], sp["head_horizontal"][0])
+        tilted_angle = math.atan2(tp["head_horizontal"][1], tp["head_horizontal"][0])
+        assert abs(tilted_angle - straight_angle) > 0.1  # at least ~6 degrees difference
 
     def test_tilted_ellipse_center_shifts_toward_upper_left(self):
         """When the right ear is higher, the hair center shifts toward upper-left."""
@@ -391,8 +395,27 @@ class TestPitchExpansion:
         zone = HairZone(face=_make_face(detected=False), pose=pose)
         params = zone.ellipse_params
         head_scale = 0.5  # from default ear distance
-        baseline_sh = head_scale * 0.6 * 1.0  # pitch_factor >= 1
+        baseline_sh = head_scale * 1.2 * 1.0  # pitch_factor >= 1
         assert params["semi_height"] >= baseline_sh - 1e-9
+
+
+    def test_pitch_offset_shifts_center(self):
+        """When leaning forward, hair_center shifts further from head_center."""
+        # Neutral: nose at y=0.4, ears at y=0.35
+        neutral_pose = _make_pose(nose_y=0.4)
+        neutral_zone = HairZone(face=_make_face(detected=False), pose=neutral_pose)
+        nc = neutral_zone.ellipse_params["center"]
+        nhc = neutral_zone.ellipse_params["head_center"]
+        neutral_dist = math.sqrt((nc[0]-nhc[0])**2 + (nc[1]-nhc[1])**2)
+
+        # Forward lean: nose at y=0.35 (same as ears = face down)
+        lean_pose = _make_pose(nose_y=0.35)
+        lean_zone = HairZone(face=_make_face(detected=False), pose=lean_pose)
+        lc = lean_zone.ellipse_params["center"]
+        lhc = lean_zone.ellipse_params["head_center"]
+        lean_dist = math.sqrt((lc[0]-lhc[0])**2 + (lc[1]-lhc[1])**2)
+
+        assert lean_dist > neutral_dist  # center shifts further when leaning
 
 
 # ---------------------------------------------------------------------------

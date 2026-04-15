@@ -427,7 +427,14 @@ def main(camera: Optional[int] = None) -> None:
     fps_value   = 0.0
     fps_ts      = time.monotonic()
 
+    # --- CSV recording state ---
+    import csv
+    csv_file = None
+    csv_writer = None
+    recording_label = ""
+
     print("[debugview] Running — press 'q' or ESC to quit, 'c' to cycle cameras.")
+    print("[debugview] Press '1' to record TWISTING, '2' to record COMBING, 's' to stop recording.")
 
     try:
         while True:
@@ -455,6 +462,29 @@ def main(camera: Optional[int] = None) -> None:
                 fps_counter = 0
                 fps_ts      = now
 
+            # --- CSV recording ---
+            if csv_writer is not None and hands:
+                for hi, hand in enumerate(hands):
+                    row = {
+                        "timestamp": now,
+                        "label": recording_label,
+                        "hand_idx": hi,
+                        "handedness": hand.handedness,
+                        "pinch_ratio": hand.pinch_ratio(),
+                        "hand_scale": hand.hand_scale(),
+                        "is_gripping": hand.is_gripping(3),
+                        "fingertips_in_zone": result.fingertips_in_zone,
+                        "state": result.state,
+                    }
+                    # Add all 21 landmark positions
+                    for lm_idx in range(21):
+                        lm = hand.landmarks.get(lm_idx)
+                        if lm:
+                            row[f"lm{lm_idx}_x"] = f"{lm.x:.4f}"
+                            row[f"lm{lm_idx}_y"] = f"{lm.y:.4f}"
+                            row[f"lm{lm_idx}_z"] = f"{lm.z:.4f}"
+                    csv_writer.writerow(row)
+
             # --- Build display frame ---
             display = frame.copy()
 
@@ -466,12 +496,50 @@ def main(camera: Optional[int] = None) -> None:
 
             cv2.imshow("HairGuard Debug View", display)
 
+            # --- Recording indicator on frame ---
+            if csv_writer is not None:
+                rec_text = f"REC [{recording_label}]"
+                cv2.circle(display, (w - 30, 20), 8, (0, 0, 255), -1)
+                cv2.putText(display, rec_text, (w - 200, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.imshow("HairGuard Debug View", display)
+
             key = cv2.waitKey(1) & 0xFF
             if key in (ord('q'), 27):
                 break
             # Detect window closed via X button
             if cv2.getWindowProperty("HairGuard Debug View", cv2.WND_PROP_VISIBLE) < 1:
                 break
+            elif key == ord('1'):
+                # Start recording TWISTING
+                if csv_file is not None:
+                    csv_file.close()
+                csv_path = Path.home() / ".hairguard" / f"recording_twisting_{int(time.time())}.csv"
+                csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+                fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
+                fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
+                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
+                csv_writer.writeheader()
+                recording_label = "twisting"
+                print(f"[debugview] Recording TWISTING to {csv_path}")
+            elif key == ord('2'):
+                # Start recording COMBING
+                if csv_file is not None:
+                    csv_file.close()
+                csv_path = Path.home() / ".hairguard" / f"recording_combing_{int(time.time())}.csv"
+                csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+                fieldnames = ["timestamp", "label", "hand_idx", "handedness", "pinch_ratio", "hand_scale", "is_gripping", "fingertips_in_zone", "state"]
+                fieldnames += [f"lm{i}_{c}" for i in range(21) for c in ("x", "y", "z")]
+                csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
+                csv_writer.writeheader()
+                recording_label = "combing"
+                print(f"[debugview] Recording COMBING to {csv_path}")
+            elif key == ord('s'):
+                # Stop recording
+                if csv_file is not None:
+                    csv_file.close()
+                    csv_file = None
+                    csv_writer = None
+                    print("[debugview] Recording stopped.")
             elif key == ord('c'):
                 cam.release()
                 current_cam_slot = (current_cam_slot + 1) % len(camera_indices)
@@ -484,6 +552,9 @@ def main(camera: Optional[int] = None) -> None:
                     cam = open_camera(camera_indices[current_cam_slot])
 
     finally:
+        if csv_file is not None:
+            csv_file.close()
+            print("[debugview] Recording saved.")
         cam.release()
         pose_det.close()
         hand_det.close()

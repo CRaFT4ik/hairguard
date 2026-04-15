@@ -17,7 +17,7 @@ DEFAULTS: dict[str, Any] = {
         "min_confidence": 0.5,
         "pinch_threshold": 0.25,
         "spread_threshold": 0.075,
-        "rotation_threshold": 0.10,
+        "rotation_threshold": 0.075,
         "persist_frames": 5,
         "min_presence_score": 0.7,
         "hair_dilation_px": 12,

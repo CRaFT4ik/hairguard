@@ -72,12 +72,16 @@ class GestureAnalyzer:
         self._dismiss_delay_sec: float = config.get(det, "dismiss_delay_sec")
         self._min_presence: float = config.get(det, "min_presence_score")
 
-        # Data-driven thresholds (from empirical analysis)
+        # Data-driven thresholds — frontal (default)
         self._pinch_threshold: float = config.get(det, "pinch_threshold")
         self._spread_threshold: float = config.get(det, "spread_threshold")
         self._rotation_threshold: float = config.get(det, "rotation_threshold")
+        # Relaxed thresholds for side camera (yaw_ratio < 0.3)
+        self._side_spread_threshold: float = 0.10
+        self._side_rotation_threshold: float = 0.10
         self._persist_frames: int = int(config.get(det, "persist_frames"))
         self._hair_dilation_px: int = int(config.get(det, "hair_dilation_px"))
+        self._shoulder_distance: float = 0.0  # updated per frame
 
         # Ring buffers for rolling features
         self._pinch_buf: collections.deque = collections.deque(maxlen=self._WINDOW)
@@ -178,6 +182,26 @@ class GestureAnalyzer:
             self._consecutive_positive = 0
             return result
 
+        # Compute camera angle: yaw_ratio = ear_distance / shoulder_distance
+        # < 0.3 = side view, >= 0.3 = frontal
+        lm = pose_result.landmarks
+        left_ear = lm.get("left_ear")
+        right_ear = lm.get("right_ear")
+        left_sh = lm.get("left_shoulder")
+        right_sh = lm.get("right_shoulder")
+        ear_dist = 0.0
+        sh_dist = 0.0
+        if left_ear and right_ear and left_ear.confidence >= 0.5 and right_ear.confidence >= 0.5:
+            ear_dist = math.sqrt((right_ear.x - left_ear.x)**2 + (right_ear.y - left_ear.y)**2)
+        if left_sh and right_sh and left_sh.confidence >= 0.5 and right_sh.confidence >= 0.5:
+            sh_dist = math.sqrt((right_sh.x - left_sh.x)**2 + (right_sh.y - left_sh.y)**2)
+        yaw_ratio = ear_dist / sh_dist if sh_dist > 0.05 else 0.45
+
+        # Adaptive thresholds based on camera angle
+        is_side_view = yaw_ratio < 0.3
+        spread_thresh = self._side_spread_threshold if is_side_view else self._spread_threshold
+        rotation_thresh = self._side_rotation_threshold if is_side_view else self._rotation_threshold
+
         # Expand hair mask edges for better coverage (side-camera views need more)
         refined = hair_mask.dilate(self._hair_dilation_px)
 
@@ -229,11 +253,13 @@ class GestureAnalyzer:
             rotation = sum(self._rotation_buf) / len(self._rotation_buf) if self._rotation_buf else 0.0
             result["rotation"] = rotation
 
-            # --- Decision rule (data-driven, 3 independent thresholds) ---
+            # --- Decision rule (adaptive thresholds by camera angle) ---
+            # Frontal: pinch<=0.25, spread<=0.075, rotation<=0.075
+            # Side:    pinch<=0.25, spread<=0.10,  rotation<=0.10
             frame_positive = (
                 pinch_smooth <= self._pinch_threshold
-                and spread <= self._spread_threshold
-                and rotation <= self._rotation_threshold
+                and spread <= spread_thresh
+                and rotation <= rotation_thresh
             )
 
             if frame_positive:

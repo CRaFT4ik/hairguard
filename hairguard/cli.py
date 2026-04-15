@@ -240,6 +240,12 @@ def cmd_autostart(args: argparse.Namespace) -> None:
         autostart_off()
 
 
+def cmd_debug(args: argparse.Namespace) -> None:
+    from hairguard.debugview import main as debugview_main
+
+    debugview_main(camera=args.camera)
+
+
 def cmd_not_implemented(_args: argparse.Namespace) -> None:
     print("Not yet implemented")
 
@@ -294,6 +300,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_autostart = sub.add_parser("autostart", help="Manage autostart")
     p_autostart.add_argument("state", choices=["on", "off"])
     p_autostart.set_defaults(func=cmd_autostart)
+
+    # debug
+    p_debug = sub.add_parser("debug", help="Open live debug/visualization view")
+    p_debug.add_argument("--camera", type=int, default=None, metavar="N",
+                         help="Camera index to use (default: from config)")
+    p_debug.set_defaults(func=cmd_debug)
 
     return parser
 

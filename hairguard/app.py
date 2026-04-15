@@ -21,8 +21,6 @@ from typing import Optional
 class HairGuardApp:
     """Main application class that wires all HairGuard components together."""
 
-    # How often the detection tick runs (milliseconds)
-    _TICK_MS = 200
     # Update tray tooltip every N ticks (~6 seconds at 5 FPS)
     _TOOLTIP_EVERY_N_TICKS = 30
 
@@ -34,6 +32,8 @@ class HairGuardApp:
         from hairguard.phrases import PhraseManager
         from hairguard.camera import CameraManager
         from hairguard.detector import PoseDetector
+        from hairguard.hand_detector import HandDetector
+        from hairguard.face_detector import FaceDetector
         from hairguard.analyzer import GestureAnalyzer
         from hairguard.overlay import create_overlay
         from hairguard.tray import TrayApp
@@ -62,7 +62,13 @@ class HairGuardApp:
         # --- Detector + Analyzer ---
         min_conf: float = float(self._config.get("detection", "min_confidence") or 0.5)
         self._detector = PoseDetector(min_confidence=min_conf)
+        self._hand_detector = HandDetector(max_hands=2, min_confidence=min_conf)
+        self._face_detector = FaceDetector(min_confidence=min_conf)
         self._analyzer = GestureAnalyzer(self._config)
+
+        # Derive tick interval from configured FPS
+        fps = float(self._config.get("detection", "fps") or 10)
+        self._TICK_MS = max(50, int(1000 / fps))
 
         # --- Overlay (creates the tkinter root) ---
         self._overlay = create_overlay(self._config)
@@ -150,6 +156,14 @@ class HairGuardApp:
         # Close MediaPipe detector
         try:
             self._detector.close()
+        except Exception:
+            pass
+        try:
+            self._hand_detector.close()
+        except Exception:
+            pass
+        try:
+            self._face_detector.close()
         except Exception:
             pass
 
@@ -251,8 +265,11 @@ class HairGuardApp:
         frame_height = frame.shape[0] if hasattr(frame, "shape") else 480
         frame_width = frame.shape[1] if hasattr(frame, "shape") and len(frame.shape) > 1 else 640
 
-        pose_result = self._detector.process(frame)
-        result = self._analyzer.analyze(pose_result, frame_height, frame_width)
+        ts_base = int(time.monotonic() * 1000)
+        pose_result = self._detector.process(frame, timestamp_ms=ts_base)
+        hand_results = self._hand_detector.detect(frame, timestamp_ms=ts_base + 1)
+        face_result = self._face_detector.detect(frame, timestamp_ms=ts_base + 2)
+        result = self._analyzer.analyze(pose_result, hand_results, face_result, frame_height, frame_width)
 
         # --- Overlay management ---
         if result.should_alert and not self._overlay.is_visible():

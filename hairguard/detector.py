@@ -72,12 +72,20 @@ class PoseDetector:
         self._landmarker = PoseLandmarker.create_from_options(options)
         self._frame_ts = 0
 
-    def process(self, frame) -> PoseResult:
-        """Run pose detection on a BGR frame and return a PoseResult."""
+    def process(self, frame, timestamp_ms: int | None = None) -> PoseResult:
+        """Run pose detection on a BGR frame and return a PoseResult.
+
+        Parameters
+        ----------
+        frame:
+            OpenCV BGR ndarray.
+        timestamp_ms:
+            Monotonic millisecond timestamp.  If None, time.monotonic()*1000 is used.
+        """
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-        self._frame_ts = int(time.monotonic() * 1000)
+        self._frame_ts = int(timestamp_ms) if timestamp_ms is not None else int(time.monotonic() * 1000)
         result = self._landmarker.detect_for_video(mp_image, self._frame_ts)
 
         if not result.pose_landmarks or len(result.pose_landmarks) == 0:

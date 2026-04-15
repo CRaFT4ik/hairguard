@@ -269,7 +269,8 @@ PHRASES: list[str] = [
 ]
 
 # Ensure we have at least 220 phrases
-assert len(PHRASES) >= 220, f"Need 220+ phrases, got {len(PHRASES)}"
+if len(PHRASES) < 220:
+    raise ValueError(f"Need 220+ phrases, got {len(PHRASES)}")
 
 # ---------------------------------------------------------------------------
 # State management

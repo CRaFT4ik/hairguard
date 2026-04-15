@@ -144,4 +144,5 @@ class Config:
         editor = os.environ.get("EDITOR")
         if not editor:
             editor = "notepad" if sys.platform == "win32" else "nano"
-        os.system(f'{editor} "{CONFIG_PATH}"')
+        import subprocess
+        subprocess.run([editor, str(CONFIG_PATH)])

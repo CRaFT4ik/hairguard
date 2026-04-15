@@ -14,7 +14,7 @@ _MIGRATIONS: list[list[str]] = [
             version INTEGER NOT NULL
         )
         """,
-        "INSERT INTO schema_version (version) VALUES (0)",
+        "INSERT OR IGNORE INTO schema_version (version) VALUES (0)",
         """
         CREATE TABLE IF NOT EXISTS episodes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,

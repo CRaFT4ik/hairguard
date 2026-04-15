@@ -88,9 +88,11 @@ class TrayApp:
 
     def stop(self) -> None:
         """Stop the pystray icon (safe to call from any thread)."""
-        if self._icon is not None:
+        icon = self._icon
+        self._icon = None  # signal tooltip updater thread to stop
+        if icon is not None:
             try:
-                self._icon.stop()
+                icon.stop()
             except Exception:
                 pass
 
@@ -130,7 +132,8 @@ class TrayApp:
         remaining = self._pause_end - time.monotonic()
         if remaining <= 0:
             return 0
-        return max(1, int(remaining / 60) + (1 if remaining % 60 else 0))
+        import math
+        return max(1, math.ceil(remaining / 60))
 
     def _pause_label(self) -> str:
         if not self._paused:

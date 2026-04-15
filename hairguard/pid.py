@@ -13,33 +13,26 @@ DEFAULT_PID_PATH = HAIRGUARD_DIR / "hairguard.pid"
 
 def _process_is_alive(pid: int) -> bool:
     """Return True if a process with the given PID is alive."""
-    try:
-        if sys.platform == "win32":
+    if sys.platform == "win32":
+        try:
             import ctypes
-
             SYNCHRONIZE = 0x00100000
             handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
             if handle == 0:
                 return False
             ctypes.windll.kernel32.CloseHandle(handle)
             return True
-        else:
-            os.kill(pid, 0)
-            return True
-    except (OSError, PermissionError):
-        # OSError/PermissionError with errno EPERM means process exists but
-        # we lack permission to signal it — still alive.
-        import errno as _errno
-
-        try:
-            os.kill(pid, 0)
-        except OSError as e:
-            if e.errno == _errno.EPERM:
-                return True
-            return False
         except Exception:
             return False
-        return False
+    else:
+        import errno as _errno
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as e:
+            if e.errno == _errno.EPERM:
+                return True  # process exists but we lack permission
+            return False
 
 
 class PidFile:

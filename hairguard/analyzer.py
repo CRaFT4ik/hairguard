@@ -55,7 +55,7 @@ class GestureAnalyzer:
     # Public API
     # ------------------------------------------------------------------
 
-    def analyze(self, pose_result: PoseResult, frame_height: int) -> AnalysisResult:
+    def analyze(self, pose_result: PoseResult, frame_height: int, frame_width: int = 0) -> AnalysisResult:
         """
         Process one frame's PoseResult and advance the state machine.
 
@@ -72,7 +72,7 @@ class GestureAnalyzer:
             Snapshot of the current analysis state.
         """
         now = time.monotonic()
-        hand_near_head = self._detect(pose_result, frame_height)
+        hand_near_head = self._detect(pose_result, frame_height, frame_width or frame_height)
 
         episode_started = False
         episode_ended = False
@@ -128,7 +128,7 @@ class GestureAnalyzer:
         self._state = new_state
         self._state_entered_at = now
 
-    def _detect(self, pose_result: PoseResult, frame_height: int) -> bool:
+    def _detect(self, pose_result: PoseResult, frame_height: int, frame_width: int) -> bool:
         """
         Return True if any wrist is close enough to any ear.
 
@@ -162,7 +162,7 @@ class GestureAnalyzer:
         )
 
         if use_fallback:
-            return self._detect_fallback(wrists, ears, frame_height)
+            return self._detect_fallback(wrists, ears, frame_height, frame_width)
         else:
             return self._detect_normalized(wrists, ears, left_shoulder, right_shoulder)
 
@@ -191,18 +191,17 @@ class GestureAnalyzer:
         wrists: list[Landmark],
         ears: list[Landmark],
         frame_height: int,
+        frame_width: int,
     ) -> bool:
         """Absolute distance as fraction of frame height (shoulder occlusion fallback)."""
-        # Landmarks are normalized 0-1; scale y by frame_height, keep x proportional
-        # Use frame_height for both axes for a uniform scale.
-        scale = float(frame_height) if frame_height > 0 else 1.0
-        threshold_px = self._fallback_frame_percent * scale
+        scale_y = float(frame_height) if frame_height > 0 else 1.0
+        scale_x = float(frame_width) if frame_width > 0 else scale_y
+        threshold_px = self._fallback_frame_percent * scale_y
 
         for wrist in wrists:
             for ear in ears:
-                # Scale both axes by frame_height to get pixel-equivalent distance
-                dx = (wrist.x - ear.x) * scale
-                dy = (wrist.y - ear.y) * scale
+                dx = (wrist.x - ear.x) * scale_x
+                dy = (wrist.y - ear.y) * scale_y
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist < threshold_px:
                     return True

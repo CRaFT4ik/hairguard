@@ -235,7 +235,7 @@ def _build_gtk_overlay(config: "Config") -> "GtkOverlay | None":
                 css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
             self._win.add(self._label)
-            self._win.connect("delete-event", Gtk.main_quit)
+            self._win.connect("delete-event", lambda w, e: self.hide() or True)
 
         def show(self, phrase: str) -> None:
             self._label.set_text(phrase)

@@ -46,11 +46,8 @@ class HairGuardApp:
             camera_index = self._config.get("camera") or 0
         self._camera_index = camera_index
 
-        # --- Instance guard ---
+        # --- Instance guard (actual acquire happens in run()) ---
         self._pid_file = PidFile()
-        if self._pid_file.is_running():
-            print("HairGuard уже запущен. Используйте 'hairguard stop' для остановки.")
-            sys.exit(1)
 
         # --- Database + stats ---
         self._db = Database()
@@ -89,6 +86,8 @@ class HairGuardApp:
 
         # --- Frame queue (maxsize=2 — drop old frames if detection is slow) ---
         self._frame_queue: queue.Queue = queue.Queue(maxsize=2)
+        # Tray events queue (thread-safe communication from tray thread to main thread)
+        self._tray_events: queue.Queue = queue.Queue()
 
         # --- State flags ---
         self._running = False
@@ -183,10 +182,13 @@ class HairGuardApp:
         """Daemon thread: continuously reads frames and puts them in the queue."""
         fps: float = float(self._config.get("detection", "fps") or 5)
         sleep_sec = 1.0 / fps
+        consecutive_failures = 0
+        max_failures = 30  # ~6 seconds at 5 FPS
 
         while self._running:
             frame = self._camera.read_frame()
             if frame is not None:
+                consecutive_failures = 0
                 # Drop the oldest frame if the queue is full, then put the new one
                 if self._frame_queue.full():
                     try:
@@ -197,6 +199,12 @@ class HairGuardApp:
                     self._frame_queue.put_nowait(frame)
                 except queue.Full:
                     pass  # Race condition — ignore
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_failures:
+                    print("[app] Камера отключена или недоступна. Завершаю работу.")
+                    self._on_exit()
+                    return
 
             time.sleep(sleep_sec)
 
@@ -210,6 +218,22 @@ class HairGuardApp:
             return
 
         self._tick_count += 1
+
+        # Drain tray events (thread-safe)
+        while not self._tray_events.empty():
+            try:
+                event = self._tray_events.get_nowait()
+            except queue.Empty:
+                break
+            if event == "pause":
+                self._paused = True
+                self._hide_overlay_if_visible()
+            elif event == "resume":
+                self._paused = False
+            elif event == "exit":
+                self._running = False
+                self._root.quit()
+                return
 
         # If paused, skip detection but keep rescheduling
         if self._paused:
@@ -225,9 +249,10 @@ class HairGuardApp:
 
         # --- Detection pipeline ---
         frame_height = frame.shape[0] if hasattr(frame, "shape") else 480
+        frame_width = frame.shape[1] if hasattr(frame, "shape") and len(frame.shape) > 1 else 640
 
         pose_result = self._detector.process(frame)
-        result = self._analyzer.analyze(pose_result, frame_height)
+        result = self._analyzer.analyze(pose_result, frame_height, frame_width)
 
         # --- Overlay management ---
         if result.should_alert and not self._overlay.is_visible():
@@ -267,19 +292,15 @@ class HairGuardApp:
 
     def _on_pause(self) -> None:
         """Called from tray thread when user clicks Pause."""
-        self._paused = True
-        # Hide overlay if currently shown — post to main thread
-        self._root.after(0, self._hide_overlay_if_visible)
+        self._tray_events.put("pause")
 
     def _on_resume(self) -> None:
         """Called from tray thread when user clicks Resume or auto-resume fires."""
-        self._paused = False
+        self._tray_events.put("resume")
 
     def _on_exit(self) -> None:
-        """Called from tray thread when user clicks Exit."""
-        self._running = False
-        # Ask tkinter to quit on the main thread
-        self._root.after(0, self._root.quit)
+        """Called from tray thread or signal handler."""
+        self._tray_events.put("exit")
 
     def _hide_overlay_if_visible(self) -> None:
         """Hide overlay if visible. Must be called on main thread."""
@@ -302,9 +323,6 @@ class HairGuardApp:
         """Return today's stats as a short string for the tray tooltip."""
         try:
             from datetime import date
-            from hairguard.stats import StatsRecorder
-            from hairguard.db import Database
-
             today = date.today()
             from datetime import datetime as _dt
             from_dt = _dt(today.year, today.month, today.day, 0, 0, 0)

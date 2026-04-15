@@ -469,6 +469,9 @@ def main(camera: Optional[int] = None) -> None:
             key = cv2.waitKey(1) & 0xFF
             if key in (ord('q'), 27):
                 break
+            # Detect window closed via X button
+            if cv2.getWindowProperty("HairGuard Debug View", cv2.WND_PROP_VISIBLE) < 1:
+                break
             elif key == ord('c'):
                 cam.release()
                 current_cam_slot = (current_cam_slot + 1) % len(camera_indices)

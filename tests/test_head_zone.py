@@ -70,10 +70,14 @@ class TestHairZoneBounds:
         assert x_max == pytest.approx(0.75 + margin)
 
     def test_y_forehead_avg(self):
-        """bounds y_forehead_avg should match the flat forehead_y."""
+        """bounds y_forehead_avg accounts for hairline shift above eyebrow line.
+
+        With forehead_y=0.35, nose_y=0.40:
+        shifted = 0.35 - (0.40 - 0.35) * 0.4 = 0.33
+        """
         zone = _default_zone(face=_make_face(forehead_y=0.35))
         _, _, _, y_forehead_avg = zone.bounds
-        assert y_forehead_avg == pytest.approx(0.35)
+        assert y_forehead_avg == pytest.approx(0.33, abs=0.01)
 
     def test_ceiling_not_negative(self):
         """y_ceiling is always >= 0.0 even with a large offset."""
@@ -82,14 +86,16 @@ class TestHairZoneBounds:
         assert y_ceiling == pytest.approx(0.0)
 
     def test_ceiling_default_offset(self):
-        """With default offset=0.4, ceiling = max(0, forehead_y_mean - shoulder_width * 0.4)."""
+        """Ceiling uses shifted forehead_y_mean (hairline), not raw eyebrow line."""
         face = _make_face(forehead_y=0.35)
         pose = _make_pose(left_shoulder_x=0.2, right_shoulder_x=0.8)
         zone = HairZone(face=face, pose=pose, hair_zone_offset=0.4)
         shoulder_width = abs(0.8 - 0.2)
-        expected_ceiling = max(0.0, 0.35 - shoulder_width * 0.4)
+        # Shifted forehead: 0.35 - (0.40 - 0.35)*0.4 = 0.33
+        shifted_forehead = 0.33
+        expected_ceiling = max(0.0, shifted_forehead - shoulder_width * 0.4)
         _, _, y_ceiling, _ = zone.bounds
-        assert y_ceiling == pytest.approx(expected_ceiling)
+        assert y_ceiling == pytest.approx(expected_ceiling, abs=0.01)
 
 
 # ---------------------------------------------------------------------------

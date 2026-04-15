@@ -18,7 +18,7 @@ DEFAULTS: dict[str, Any] = {
         "pinch_threshold": 0.4,
         "min_presence_score": 0.7,
         "hair_zone_offset": 0.4,
-        "grip_curl_threshold": 2,
+        "grip_curl_threshold": 3,
     },
     "alert": {
         "opacity": 0.7,

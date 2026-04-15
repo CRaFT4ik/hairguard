@@ -74,11 +74,21 @@ class HairZone:
     # ------------------------------------------------------------------
 
     def _compute_forehead_y_mean(self) -> float:
-        """Return the mean y of the forehead line, or nose.y as fallback."""
+        """Return the mean y of the hairline (forehead shifted up), or nose.y as fallback.
+
+        FaceMesh FACE_OVAL traces the eyebrow line, not the hairline.
+        We shift upward by 30% of nose-to-forehead distance to approximate the hairline.
+        """
         if self._face.detected:
             line = self._face.forehead_line()
             if line:
-                return sum(y for _, y in line) / len(line)
+                raw_y = sum(y for _, y in line) / len(line)
+                # Shift up toward hairline: use nose as lower ref
+                nose = self._pose.landmarks.get("nose")
+                if nose is not None:
+                    forehead_to_nose = nose.y - raw_y  # positive distance
+                    return raw_y - forehead_to_nose * 0.4  # shift up by 40%
+                return raw_y
 
         # Fallback: use nose.y as a forehead proxy
         nose = self._pose.landmarks.get("nose")

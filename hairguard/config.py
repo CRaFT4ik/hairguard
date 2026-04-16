@@ -12,7 +12,7 @@ DEFAULTS: dict[str, Any] = {
     "camera": 0,
     "detection": {
         "trigger_delay_sec": 0.5,
-        "dismiss_delay_sec": 2.5,
+        "dismiss_delay_sec": 3.5,
         "fps": 10,
         "min_confidence": 0.5,
         "pinch_threshold": 0.25,
@@ -23,7 +23,7 @@ DEFAULTS: dict[str, Any] = {
         "hair_dilation_px": 12,
     },
     "alert": {
-        "opacity": 0.7,
+        "opacity": 0.9,
         "text_color": "#ffffff",
     },
     "pause": {

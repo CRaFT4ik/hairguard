@@ -243,20 +243,23 @@ class NoseAnchoredHairZone:
             )
         self._frame_count += 1
 
+    _ZONE_MARGIN = 1.15  # 15% expansion in each direction
+
     def _point_in_zone(
         self,
         px: int,
         py: int,
         nose_px: Optional[tuple[float, float]],
     ) -> bool:
-        """Check if pixel (px, py) is inside the learned zone."""
+        """Check if pixel (px, py) is inside the learned zone (with 15% margin)."""
         if self._offsets is None or nose_px is None:
             return False
         nx, ny = int(nose_px[0]), int(nose_px[1])
         top, bottom, left, right = self._offsets
+        m = self._ZONE_MARGIN
         return (
-            ny - top <= py <= ny + bottom
-            and nx - left <= px <= nx + right
+            ny - top * m <= py <= ny + bottom * m
+            and nx - left * m <= px <= nx + right * m
         )
 
     @property

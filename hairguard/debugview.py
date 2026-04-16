@@ -483,7 +483,15 @@ def main(camera: Optional[int] = None) -> None:
     cam = open_camera(camera_indices[current_cam_slot])
 
     cv2.namedWindow("HairGuard Debug View", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("HairGuard Debug View", 960, 600)
+    # Set window size proportional to camera resolution (fit within 960px width)
+    test_frame = cam.read_frame()
+    if test_frame is not None:
+        fh, fw = test_frame.shape[:2]
+        display_w = min(960, fw)
+        display_h = int(fh * display_w / fw)
+        cv2.resizeWindow("HairGuard Debug View", display_w, display_h)
+    else:
+        cv2.resizeWindow("HairGuard Debug View", 960, 540)
 
     fps_counter = 0
     fps_value   = 0.0

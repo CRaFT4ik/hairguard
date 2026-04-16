@@ -19,7 +19,7 @@ from typing import Optional
 
 from hairguard.config import Config
 from hairguard.detector import PoseResult
-from hairguard.hair_segmenter import HairMask, StableMaskTracker
+from hairguard.hair_segmenter import HairMask
 from hairguard.hand_detector import HandResult, INDEX_TIP, PINKY_TIP
 
 
@@ -81,7 +81,6 @@ class GestureAnalyzer:
         self._side_rotation_threshold: float = 0.10
         self._persist_frames: int = int(config.get(det, "persist_frames"))
         self._hair_dilation_px: int = int(config.get(det, "hair_dilation_px"))
-        self._mask_tracker = StableMaskTracker(recovery_frames=10)
 
         # Ring buffers for rolling features
         self._pinch_buf: collections.deque = collections.deque(maxlen=self._WINDOW)
@@ -202,19 +201,8 @@ class GestureAnalyzer:
         spread_thresh = self._side_spread_threshold if is_side_view else self._spread_threshold
         rotation_thresh = self._side_rotation_threshold if is_side_view else self._rotation_threshold
 
-        # Detect if any hand is near head (wrist above shoulder level)
-        hand_near_head_rough = False
-        if left_sh and right_sh:
-            shoulder_y = min(left_sh.y, right_sh.y)
-            for hand in hand_results:
-                wrist = hand.landmarks.get(0)
-                if wrist and wrist.y < shoulder_y:
-                    hand_near_head_rough = True
-                    break
-
-        # Use stable mask tracker: frozen when hand occludes hair
-        stable_mask = self._mask_tracker.update(hair_mask, lm, hand_near_head_rough)
-        refined = stable_mask.dilate(self._hair_dilation_px)
+        # Dilate live mask for edge coverage
+        refined = hair_mask.dilate(self._hair_dilation_px)
 
         # Check each hand
         for hand in hand_results:

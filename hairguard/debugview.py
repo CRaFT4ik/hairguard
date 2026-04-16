@@ -31,7 +31,7 @@ from hairguard.camera import CameraManager
 from hairguard.config import Config
 from hairguard.detector import PoseDetector, PoseResult, Landmark
 # FaceDetector no longer used for detection (hair mask replaces it)
-from hairguard.hair_segmenter import HairSegmenter, HairMask, StableMaskTracker
+from hairguard.hair_segmenter import HairSegmenter, HairMask
 from hairguard.hand_detector import (
     HandDetector,
     HandResult,
@@ -414,7 +414,6 @@ def main(camera: Optional[int] = None) -> None:
     pose_det = PoseDetector(min_confidence=min_confidence)
     hand_det = HandDetector(max_hands=2, min_confidence=min_confidence)
     hair_seg = HairSegmenter()
-    mask_tracker = StableMaskTracker(recovery_frames=10)
     analyzer = GestureAnalyzer(config)
 
     available_cameras = CameraManager.list_cameras()
@@ -498,21 +497,7 @@ def main(camera: Optional[int] = None) -> None:
             # --- Build display frame ---
             display = frame.copy()
 
-            # Stable mask: frozen when hand near head, tracks head movement
-            hand_near = False
-            if pose.detected:
-                plm = pose.landmarks
-                ls = plm.get("left_shoulder")
-                rs = plm.get("right_shoulder")
-                if ls and rs:
-                    sh_y = min(ls.y, rs.y)
-                    for hand in hands:
-                        wrist_lm = hand.landmarks.get(0)
-                        if wrist_lm and wrist_lm.y < sh_y:
-                            hand_near = True
-                            break
-            stable = mask_tracker.update(hair_mask, pose.landmarks if pose.detected else {}, hand_near)
-            draw_hair_mask(display, stable.dilate(hair_dilation_px))
+            draw_hair_mask(display, hair_mask.dilate(hair_dilation_px))
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, pinch_threshold)
             draw_pinch_indicator(display, hands, pinch_threshold)

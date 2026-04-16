@@ -198,7 +198,7 @@ def draw_pinch_indicator(
         pt_index = _px(i.x, i.y, w, h)
 
         ratio = hand.pinch_ratio()
-        line_color = COLOR_RED if ratio < 0.30 else COLOR_GREEN  # visual indicator only
+        line_color = COLOR_RED if ratio < pinch_threshold else COLOR_GREEN
 
         cv2.line(img, pt_thumb, pt_index, line_color, 1, cv2.LINE_AA)
 
@@ -348,6 +348,8 @@ def draw_status_panel(
     result: AnalysisResult,
     fps: float,
     pinch_threshold: float,
+    spread_threshold: float = 0.075,
+    rotation_threshold: float = 0.075,
 ) -> None:
     """Render the status panel at the top of the frame."""
     h, w = img.shape[:2]
@@ -425,7 +427,7 @@ def draw_status_panel(
     # Spread
     if result.spread_index_pinky is not None:
         sp_val = result.spread_index_pinky
-        sp_color = COLOR_RED if sp_val < 0.075 else COLOR_GREEN
+        sp_color = COLOR_RED if sp_val < spread_threshold else COLOR_GREEN
         sp_txt = f"{sp_val:.3f}"
     else:
         sp_color = COLOR_GRAY
@@ -437,7 +439,7 @@ def draw_status_panel(
     # Hand rotation
     if result.hand_rotation is not None:
         rot_val = result.hand_rotation
-        rot_color = COLOR_RED if rot_val < 0.10 else COLOR_GREEN
+        rot_color = COLOR_RED if rot_val < rotation_threshold else COLOR_GREEN
         rot_txt = f"{rot_val:.3f}"
     else:
         rot_color = COLOR_GRAY
@@ -459,9 +461,11 @@ def draw_status_panel(
 def main(camera: Optional[int] = None) -> None:
     """Open the HairGuard debug view window. Blocks until 'q'/ESC is pressed."""
     config = Config()
-    pinch_threshold: float = config.get("detection", "pinch_threshold") or 0.25
+    pinch_threshold: float = config.get("detection", "pinch_threshold")
+    spread_threshold: float = config.get("detection", "spread_threshold")
+    rotation_threshold: float = config.get("detection", "rotation_threshold")
     min_confidence: float  = config.get("detection", "min_confidence")
-    hair_dilation_px: int  = int(config.get("detection", "hair_dilation_px") or 25)
+    hair_dilation_px: int  = int(config.get("detection", "hair_dilation_px"))
 
     default_camera = camera if camera is not None else (config.get("camera") or 0)
 
@@ -561,24 +565,12 @@ def main(camera: Optional[int] = None) -> None:
             display = frame.copy()
 
             draw_hair_mask(display, hair_mask.dilate(hair_dilation_px))
-            # Show nose-anchored zone only when hand is near head (fallback active)
-            hand_near = False
-            if pose.detected and hands:
-                plm = pose.landmarks
-                ls = plm.get("left_shoulder")
-                rs = plm.get("right_shoulder")
-                if ls and rs:
-                    sh_y = min(ls.y, rs.y)
-                    for hnd in hands:
-                        wlm = hnd.landmarks.get(0)
-                        if wlm and wlm.y < sh_y:
-                            hand_near = True
-                            break
-            draw_nose_anchored_zone(display, analyzer._hair_zone, pose, hand_near)
+            # Show nose-anchored zone only when fingertips are in zone (fallback may be active)
+            draw_nose_anchored_zone(display, analyzer._hair_zone, pose, result.fingertips_in_zone)
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, pinch_threshold)
             draw_pinch_indicator(display, hands, pinch_threshold)
-            draw_status_panel(display, result, fps_value, pinch_threshold)
+            draw_status_panel(display, result, fps_value, pinch_threshold, spread_threshold, rotation_threshold)
 
             cv2.imshow("HairGuard Debug View", display)
 

@@ -264,14 +264,21 @@ class GestureAnalyzer:
             rotation = sum(self._rotation_buf) / len(self._rotation_buf) if self._rotation_buf else 0.0
             result["rotation"] = rotation
 
-            # --- Decision rule (adaptive thresholds by camera angle) ---
-            # Frontal: pinch<=0.25, spread<=0.075, rotation<=0.075
-            # Side:    pinch<=0.25, spread<=0.10,  rotation<=0.10
-            frame_positive = (
-                pinch_smooth <= self._pinch_threshold
-                and spread <= spread_thresh
-                and rotation <= rotation_thresh
-            )
+            # --- Decision rule (adaptive by camera angle) ---
+            # Frontal (fingers visible): pinch + spread + rotation
+            # Side (fingers occluded by hand): skip pinch, use spread + rotation
+            #   because MediaPipe hallucinates finger positions when occluded
+            if is_side_view:
+                frame_positive = (
+                    spread <= spread_thresh
+                    and rotation <= rotation_thresh
+                )
+            else:
+                frame_positive = (
+                    pinch_smooth <= self._pinch_threshold
+                    and spread <= spread_thresh
+                    and rotation <= rotation_thresh
+                )
 
             if frame_positive:
                 self._consecutive_positive += 1

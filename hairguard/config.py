@@ -11,14 +11,14 @@ CONFIG_PATH = HAIRGUARD_DIR / "config.yaml"
 DEFAULTS: dict[str, Any] = {
     "camera": 0,
     "detection": {
-        "trigger_delay_sec": 0.8,
+        "trigger_delay_sec": 0.5,
         "dismiss_delay_sec": 2.5,
         "fps": 10,
         "min_confidence": 0.5,
         "pinch_threshold": 0.25,
         "spread_threshold": 0.075,
         "rotation_threshold": 0.075,
-        "persist_frames": 5,
+        "persist_frames": 3,
         "min_presence_score": 0.7,
         "hair_dilation_px": 12,
     },

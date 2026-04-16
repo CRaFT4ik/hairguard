@@ -64,7 +64,7 @@ class GestureAnalyzer:
     Persistence: require N consecutive positive frames before triggering.
     """
 
-    _WINDOW = 20  # rolling window size (frames)
+    _WINDOW = 10  # rolling window size (frames) — 10 = ~1s at 10 FPS
 
     def __init__(self, config: Config) -> None:
         det = "detection"

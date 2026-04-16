@@ -280,10 +280,12 @@ def draw_nose_anchored_zone(
         return
     top, bottom, left, right = offsets
 
-    x0 = max(0, nx - int(left))
-    y0 = max(0, ny - int(top))
-    x1 = min(w - 1, nx + int(right))
-    y1 = min(h - 1, ny + int(bottom))
+    # Apply same 15% margin as the detection logic
+    m = 1.15
+    x0 = max(0, nx - int(left * m))
+    y0 = max(0, ny - int(top * m))
+    x1 = min(w - 1, nx + int(right * m))
+    y1 = min(h - 1, ny + int(bottom * m))
 
     # Semi-transparent light-blue rectangle
     COLOR_LIGHT_BLUE = (200, 180, 80)   # BGR approximation of light blue
@@ -483,11 +485,11 @@ def main(camera: Optional[int] = None) -> None:
     cam = open_camera(camera_indices[current_cam_slot])
 
     cv2.namedWindow("HairGuard Debug View", cv2.WINDOW_NORMAL)
-    # Set window size proportional to camera resolution (fit within 960px width)
+    # Window = 960px wide, height preserves camera aspect ratio
     test_frame = cam.read_frame()
     if test_frame is not None:
         fh, fw = test_frame.shape[:2]
-        display_w = min(960, fw)
+        display_w = 960
         display_h = int(fh * display_w / fw)
         cv2.resizeWindow("HairGuard Debug View", display_w, display_h)
     else:

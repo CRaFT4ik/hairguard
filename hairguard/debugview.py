@@ -507,8 +507,8 @@ def main(camera: Optional[int] = None) -> None:
                 if ls and rs:
                     sh_y = min(ls.y, rs.y)
                     for hand in hands:
-                        w = hand.landmarks.get(0)
-                        if w and w.y < sh_y:
+                        wrist_lm = hand.landmarks.get(0)
+                        if wrist_lm and wrist_lm.y < sh_y:
                             hand_near = True
                             break
             stable = mask_tracker.update(hair_mask, pose.landmarks if pose.detected else {}, hand_near)

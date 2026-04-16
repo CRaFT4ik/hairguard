@@ -251,12 +251,17 @@ def draw_nose_anchored_zone(
     img: np.ndarray,
     hair_zone: NoseAnchoredHairZone,
     pose: "PoseResult",
+    hand_near_head: bool = False,
 ) -> None:
     """Draw the learned nose-anchored hair zone as a light-blue rectangle.
 
-    Only drawn when the zone is learned (>= 10 clean frames).
-    The rectangle is semi-transparent so the camera feed shows through.
+    Only drawn when:
+    - Zone is learned (>= 10 clean frames)
+    - Hand is near head (zone fallback is active)
+    When hand is away, the live mask is used and this rectangle is hidden.
     """
+    if not hand_near_head:
+        return
     if not hair_zone.is_learned:
         return
     if not pose.detected:
@@ -546,7 +551,20 @@ def main(camera: Optional[int] = None) -> None:
             display = frame.copy()
 
             draw_hair_mask(display, hair_mask.dilate(hair_dilation_px))
-            draw_nose_anchored_zone(display, analyzer._hair_zone, pose)
+            # Show nose-anchored zone only when hand is near head (fallback active)
+            hand_near = False
+            if pose.detected and hands:
+                plm = pose.landmarks
+                ls = plm.get("left_shoulder")
+                rs = plm.get("right_shoulder")
+                if ls and rs:
+                    sh_y = min(ls.y, rs.y)
+                    for hnd in hands:
+                        wlm = hnd.landmarks.get(0)
+                        if wlm and wlm.y < sh_y:
+                            hand_near = True
+                            break
+            draw_nose_anchored_zone(display, analyzer._hair_zone, pose, hand_near)
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, pinch_threshold)
             draw_pinch_indicator(display, hands, pinch_threshold)

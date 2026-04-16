@@ -364,7 +364,9 @@ def draw_status_panel(
     cv2.line(img, (0, PANEL_HEIGHT), (w, PANEL_HEIGHT), COLOR_WHITE, 1)
 
     col1 = 10
+    val1 = 155  # column 1 value offset (after label)
     col2 = w // 2 + 10
+    val2 = col2 + 120  # column 2 value offset (after label)
     lh   = 22   # line height
 
     # ---- Title ----
@@ -375,28 +377,28 @@ def draw_status_panel(
 
     # State
     cv2.putText(img, "State:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, state,    (col1 + 55, y), _FONT, _FONT_MD, state_fg, 2, cv2.LINE_AA)
+    cv2.putText(img, state, (val1, y), _FONT, _FONT_MD, state_fg, 2, cv2.LINE_AA)
     y += lh
 
     # Alert
     alert_txt   = "YES" if result.should_alert else "NO"
     alert_color = COLOR_RED if result.should_alert else COLOR_GREEN
     cv2.putText(img, "Alert:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, alert_txt, (col1 + 55, y), _FONT, _FONT_MD, alert_color, 2, cv2.LINE_AA)
+    cv2.putText(img, alert_txt, (val1, y), _FONT, _FONT_MD, alert_color, 2, cv2.LINE_AA)
     y += lh
 
     # Fingertips in zone
     fiz_txt   = "YES" if result.fingertips_in_zone else "NO"
     fiz_color = COLOR_YELLOW if result.fingertips_in_zone else COLOR_WHITE
-    cv2.putText(img, "Fingertips in zone:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, fiz_txt, (col1 + 150, y), _FONT, _FONT_MD, fiz_color, 1, cv2.LINE_AA)
+    cv2.putText(img, "In zone:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, fiz_txt, (val1, y), _FONT, _FONT_MD, fiz_color, 1, cv2.LINE_AA)
     y += lh
 
     # Consecutive frames
     cf_txt = str(result.consecutive_frames)
     cf_color = COLOR_RED if result.consecutive_frames >= 5 else COLOR_WHITE
-    cv2.putText(img, f"Persist: {cf_txt}", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, cf_txt, (col1 + 60, y), _FONT, _FONT_MD, cf_color, 1, cv2.LINE_AA)
+    cv2.putText(img, "Persist:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, cf_txt, (val1, y), _FONT, _FONT_MD, cf_color, 1, cv2.LINE_AA)
 
     # ---- Column 2 ----
     y = 22 + lh + 2
@@ -413,8 +415,8 @@ def draw_status_panel(
     else:
         pr_color = COLOR_GRAY
         pr_txt = "N/A"
-    cv2.putText(img, "Pinch(smooth):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, pr_txt, (col2 + 110, y), _FONT, _FONT_MD, pr_color, 1, cv2.LINE_AA)
+    cv2.putText(img, "Pinch(sm):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, pr_txt, (val2, y), _FONT, _FONT_MD, pr_color, 1, cv2.LINE_AA)
     y += lh
 
     # Spread
@@ -425,8 +427,8 @@ def draw_status_panel(
     else:
         sp_color = COLOR_GRAY
         sp_txt = "N/A"
-    cv2.putText(img, "Spread(i-p):", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, sp_txt, (col2 + 95, y), _FONT, _FONT_MD, sp_color, 1, cv2.LINE_AA)
+    cv2.putText(img, "Spread:", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, sp_txt, (val2, y), _FONT, _FONT_MD, sp_color, 1, cv2.LINE_AA)
     y += lh
 
     # Hand rotation
@@ -438,7 +440,7 @@ def draw_status_panel(
         rot_color = COLOR_GRAY
         rot_txt = "N/A"
     cv2.putText(img, "Rotation:", (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, rot_txt, (col2 + 72, y), _FONT, _FONT_MD, rot_color, 1, cv2.LINE_AA)
+    cv2.putText(img, rot_txt, (val2, y), _FONT, _FONT_MD, rot_color, 1, cv2.LINE_AA)
     y += lh
 
     # Key hints
@@ -545,22 +547,23 @@ def main(camera: Optional[int] = None) -> None:
                             row[f"lm{lm_idx}_z"] = f"{lm.z:.4f}"
                     csv_writer.writerow(row)
 
-            # --- Build display frame (upscale to 960px wide for sharp text) ---
-            fh, fw = frame.shape[:2]
-            target_w = 960
-            if fw < target_w:
-                scale = target_w / fw
-                display = cv2.resize(frame, (target_w, int(fh * scale)), interpolation=cv2.INTER_LINEAR)
-            else:
-                display = frame.copy()
+            # --- Build display frame ---
+            # Draw everything on original resolution (coordinates match engine)
+            display = frame.copy()
 
             draw_hair_mask(display, hair_mask.dilate(hair_dilation_px))
-            # Show nose-anchored zone only when fingertips are in zone (fallback may be active)
             draw_nose_anchored_zone(display, analyzer._hair_zone, pose, result.fingertips_in_zone)
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, pinch_threshold)
             draw_pinch_indicator(display, hands, pinch_threshold)
             draw_status_panel(display, result, fps_value, pinch_threshold, spread_threshold, rotation_threshold)
+
+            # Upscale for sharp display (after all drawing)
+            dh, dw = display.shape[:2]
+            target_w = 960
+            if dw < target_w:
+                scale = target_w / dw
+                display = cv2.resize(display, (target_w, int(dh * scale)), interpolation=cv2.INTER_LINEAR)
 
             cv2.imshow("HairGuard Debug View", display)
 

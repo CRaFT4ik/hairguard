@@ -188,7 +188,8 @@ class NoseAnchoredHairZone:
                 return True
 
             # Fallback: nose-anchored zone (useful when hand corrupts mask)
-            if near_hair and self._point_in_zone(fx, fy, nose_px):
+            # Only use fallback after zone has stabilized (>= 10 clean frames)
+            if near_hair and self.is_learned and self._point_in_zone(fx, fy, nose_px):
                 return True
 
         return False

@@ -229,10 +229,11 @@ class GestureAnalyzer:
                 continue
 
             # Layer 3: Fingertips in hair area?
-            # Use nose-anchored zone which handles hand-occlusion of the mask.
+            # Pass RAW mask for zone learning (not dilated — avoids inflating zone)
+            # but dilated mask is used for the direct pixel check inside update_and_check
             thumb_px = (thumb.x * frame_width, thumb.y * frame_height)
             index_px = (index.x * frame_width, index.y * frame_height)
-            if not self._hair_zone.update_and_check(refined, nose_px, [thumb_px, index_px]):
+            if not self._hair_zone.update_and_check(hair_mask, nose_px, [thumb_px, index_px]):
                 continue
             result["in_zone"] = True
 

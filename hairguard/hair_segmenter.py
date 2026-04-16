@@ -13,6 +13,11 @@ HairMask(mask, width, height)
     .contains(x, y)    — True if normalized point falls on a hair pixel
     .get_mask()        — raw 2D numpy array (uint8, 1=hair)
     .detected          — True if any hair pixels are present
+
+NoseAnchoredHairZone()
+    .update_and_check(hair_mask, nose_px, fingertips_px) -> bool
+    .is_learned        — True once enough clean frames have been seen
+    .zone_bounds       — (offsets, frame_count) for debug display
 """
 from __future__ import annotations
 
@@ -124,7 +129,143 @@ class HairMask:
 
 
 # ---------------------------------------------------------------------------
-# HairSegmenter
+# NoseAnchoredHairZone
+# ---------------------------------------------------------------------------
+
+
+class NoseAnchoredHairZone:
+    """Learns hair extent relative to nose from clean mask frames.
+
+    Continuously updates 4 offsets (top, bottom, left, right) from nose
+    via exponential moving average. When hand is near hair and the mask is
+    corrupted, falls back to the learned zone for containment checks.
+    """
+
+    ALPHA = 0.05        # EMA smoothing factor (slow adaptation)
+    PROXIMITY_PX = 40   # pixels — if fingertip is this close to any hair pixel, mask is "near"
+
+    def __init__(self) -> None:
+        # Learned offsets from nose in PIXELS: (top, bottom, left, right)
+        # top    = how many pixels above nose hair extends
+        # bottom = how many pixels below nose hair extends
+        # left   = how many pixels left of nose hair extends
+        # right  = how many pixels right of nose hair extends
+        self._offsets: Optional[tuple[float, float, float, float]] = None
+        self._frame_count: int = 0
+
+    def update_and_check(
+        self,
+        hair_mask: "HairMask",
+        nose_px: Optional[tuple[float, float]],
+        fingertips_px: list[tuple[float, float]],
+    ) -> bool:
+        """Main per-frame call. Returns True if ANY fingertip is on hair.
+
+        Logic:
+        1. Check if any fingertip is near a hair pixel (within PROXIMITY_PX)
+        2. If NOT near: mask is clean -> update learned zone from mask -> use mask for check
+        3. If near: mask may be corrupted -> DON'T update zone -> use BOTH mask AND learned zone
+        """
+        mask = hair_mask.get_mask()
+        if mask.ndim == 3:
+            mask = mask[:, :, 0]
+        h, w = mask.shape[:2]
+
+        # Check proximity: are fingertips near any hair pixel?
+        near_hair = self._any_near_hair(fingertips_px, mask, w, h)
+
+        # Update learned zone only when mask is clean (fingers not near hair)
+        if not near_hair and nose_px is not None:
+            self._update_zone(mask, nose_px, w, h)
+
+        # Check each fingertip
+        for fx, fy in fingertips_px:
+            fx = max(0, min(int(fx), w - 1))
+            fy = max(0, min(int(fy), h - 1))
+
+            # Primary: direct mask check (always try, works when mask is good)
+            if mask[fy, fx] > 0:
+                return True
+
+            # Fallback: nose-anchored zone (useful when hand corrupts mask)
+            if near_hair and self._point_in_zone(fx, fy, nose_px):
+                return True
+
+        return False
+
+    def _any_near_hair(
+        self,
+        fingertips_px: list[tuple[float, float]],
+        mask: np.ndarray,
+        w: int,
+        h: int,
+    ) -> bool:
+        """Check if any fingertip is within PROXIMITY_PX of a hair pixel."""
+        p = self.PROXIMITY_PX
+        for fx, fy in fingertips_px:
+            fx, fy = int(fx), int(fy)
+            y0 = max(0, fy - p)
+            y1 = min(h, fy + p)
+            x0 = max(0, fx - p)
+            x1 = min(w, fx + p)
+            if mask[y0:y1, x0:x1].any():
+                return True
+        return False
+
+    def _update_zone(
+        self,
+        mask: np.ndarray,
+        nose_px: tuple[float, float],
+        w: int,
+        h: int,
+    ) -> None:
+        """Learn hair extent from clean mask via EMA."""
+        ys, xs = np.where(mask > 0)
+        if len(ys) < 100:
+            return  # not enough hair pixels
+
+        nx, ny = int(nose_px[0]), int(nose_px[1])
+        offsets = (
+            float(ny - ys.min()),   # top: nose_y - hair_top
+            float(ys.max() - ny),   # bottom: hair_bottom - nose_y
+            float(nx - xs.min()),   # left: nose_x - hair_left
+            float(xs.max() - nx),   # right: hair_right - nose_x
+        )
+
+        if self._offsets is None:
+            self._offsets = offsets
+        else:
+            a = self.ALPHA
+            self._offsets = tuple(
+                a * new + (1 - a) * old
+                for new, old in zip(offsets, self._offsets)
+            )
+        self._frame_count += 1
+
+    def _point_in_zone(
+        self,
+        px: int,
+        py: int,
+        nose_px: Optional[tuple[float, float]],
+    ) -> bool:
+        """Check if pixel (px, py) is inside the learned zone."""
+        if self._offsets is None or nose_px is None:
+            return False
+        nx, ny = int(nose_px[0]), int(nose_px[1])
+        top, bottom, left, right = self._offsets
+        return (
+            ny - top <= py <= ny + bottom
+            and nx - left <= px <= nx + right
+        )
+
+    @property
+    def is_learned(self) -> bool:
+        return self._offsets is not None and self._frame_count >= 10
+
+    @property
+    def zone_bounds(self) -> tuple[Optional[tuple[float, float, float, float]], int]:
+        """Return (offsets, frame_count) for debug display."""
+        return self._offsets, self._frame_count
 
 
 # ---------------------------------------------------------------------------

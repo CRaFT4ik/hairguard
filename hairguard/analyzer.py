@@ -19,7 +19,7 @@ from typing import Optional
 
 from hairguard.config import Config
 from hairguard.detector import PoseResult
-from hairguard.hair_segmenter import HairMask
+from hairguard.hair_segmenter import HairMask, NoseAnchoredHairZone
 from hairguard.hand_detector import HandResult, INDEX_TIP, PINKY_TIP
 
 
@@ -88,6 +88,9 @@ class GestureAnalyzer:
         self._last_hand_angle: Optional[float] = None
         self._consecutive_positive: int = 0
 
+        # Nose-anchored hair zone (survives hand occlusion)
+        self._hair_zone = NoseAnchoredHairZone()
+
         # State machine
         self._state = _State.IDLE
         self._state_entered_at: float = 0.0
@@ -102,7 +105,7 @@ class GestureAnalyzer:
         frame_width: int,
     ) -> AnalysisResult:
         now = time.monotonic()
-        detection = self._detect(pose_result, hand_results, hair_mask)
+        detection = self._detect(pose_result, hand_results, hair_mask, frame_height, frame_width)
 
         hand_near_head = detection["detected"]
 
@@ -161,6 +164,8 @@ class GestureAnalyzer:
         pose_result: PoseResult,
         hand_results: list[HandResult],
         hair_mask: HairMask,
+        frame_height: int = 480,
+        frame_width: int = 640,
     ) -> dict:
         result: dict = {
             "detected": False,
@@ -201,6 +206,14 @@ class GestureAnalyzer:
         spread_thresh = self._side_spread_threshold if is_side_view else self._spread_threshold
         rotation_thresh = self._side_rotation_threshold if is_side_view else self._rotation_threshold
 
+        # Get nose position in pixels for nose-anchored zone
+        nose = lm.get("nose")
+        nose_px = (
+            (nose.x * frame_width, nose.y * frame_height)
+            if nose and (nose.confidence or 0) >= 0.5
+            else None
+        )
+
         # Dilate live mask for edge coverage
         refined = hair_mask.dilate(self._hair_dilation_px)
 
@@ -215,8 +228,11 @@ class GestureAnalyzer:
             if thumb_p < self._min_presence or index_p < self._min_presence:
                 continue
 
-            # Layer 3: Fingertips in refined hair mask (dilated + face removed)?
-            if not (refined.contains(thumb.x, thumb.y) or refined.contains(index.x, index.y)):
+            # Layer 3: Fingertips in hair area?
+            # Use nose-anchored zone which handles hand-occlusion of the mask.
+            thumb_px = (thumb.x * frame_width, thumb.y * frame_height)
+            index_px = (index.x * frame_width, index.y * frame_height)
+            if not self._hair_zone.update_and_check(refined, nose_px, [thumb_px, index_px]):
                 continue
             result["in_zone"] = True
 

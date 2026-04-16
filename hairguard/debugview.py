@@ -31,7 +31,7 @@ from hairguard.camera import CameraManager
 from hairguard.config import Config
 from hairguard.detector import PoseDetector, PoseResult, Landmark
 # FaceDetector no longer used for detection (hair mask replaces it)
-from hairguard.hair_segmenter import HairSegmenter, HairMask
+from hairguard.hair_segmenter import HairSegmenter, HairMask, NoseAnchoredHairZone
 from hairguard.hand_detector import (
     HandDetector,
     HandResult,
@@ -241,6 +241,54 @@ def draw_hair_mask(img: np.ndarray, hair_mask: HairMask) -> None:
         + np.array([0, 120, 0], dtype=np.float32)
     ).clip(0, 255).astype(np.uint8)
     cv2.addWeighted(green_overlay, 0.45, img, 0.55, 0, img)
+
+
+# ---------------------------------------------------------------------------
+# draw_nose_anchored_zone
+# ---------------------------------------------------------------------------
+
+def draw_nose_anchored_zone(
+    img: np.ndarray,
+    hair_zone: NoseAnchoredHairZone,
+    pose: "PoseResult",
+) -> None:
+    """Draw the learned nose-anchored hair zone as a light-blue rectangle.
+
+    Only drawn when the zone is learned (>= 10 clean frames).
+    The rectangle is semi-transparent so the camera feed shows through.
+    """
+    if not hair_zone.is_learned:
+        return
+    if not pose.detected:
+        return
+
+    nose_lm = pose.landmarks.get("nose")
+    if nose_lm is None or (nose_lm.confidence or 0) < 0.5:
+        return
+
+    h, w = img.shape[:2]
+    nx = int(nose_lm.x * w)
+    ny = int(nose_lm.y * h)
+
+    offsets, frame_count = hair_zone.zone_bounds
+    if offsets is None:
+        return
+    top, bottom, left, right = offsets
+
+    x0 = max(0, nx - int(left))
+    y0 = max(0, ny - int(top))
+    x1 = min(w - 1, nx + int(right))
+    y1 = min(h - 1, ny + int(bottom))
+
+    # Semi-transparent light-blue rectangle
+    COLOR_LIGHT_BLUE = (200, 180, 80)   # BGR approximation of light blue
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x0, y0), (x1, y1), COLOR_LIGHT_BLUE, 1)
+    cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+
+    # Label in corner of the rectangle
+    label = f"hair zone ({frame_count}f)"
+    _text_shadow(img, label, (x0 + 4, y0 + 14), _FONT_SM, COLOR_LIGHT_BLUE)
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +546,7 @@ def main(camera: Optional[int] = None) -> None:
             display = frame.copy()
 
             draw_hair_mask(display, hair_mask.dilate(hair_dilation_px))
+            draw_nose_anchored_zone(display, analyzer._hair_zone, pose)
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, pinch_threshold)
             draw_pinch_indicator(display, hands, pinch_threshold)

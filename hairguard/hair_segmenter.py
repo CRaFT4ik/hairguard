@@ -209,50 +209,24 @@ class StableMaskTracker:
         width: int,
         height: int,
     ) -> np.ndarray:
-        """Warp frozen mask to follow head movement.
+        """Warp frozen mask using nose-only translation.
 
-        Uses affine transform from 3 points (nose + ears) when available.
-        Falls back to 2-point similarity, then 1-point translation.
+        Only nose is used — ears and shoulders move when arm is raised,
+        making them unreliable anchors during the freeze period.
+        Nose stays stable because it's on the face, not affected by arm.
         """
         import cv2
 
-        # Collect matched point pairs
-        matched_src = []
-        matched_dst = []
-        for key in ("nose", "left_ear", "right_ear"):
-            if key in src_lm and key in dst_lm:
-                sx, sy = src_lm[key]
-                dx, dy = dst_lm[key]
-                matched_src.append([sx * width, sy * height])
-                matched_dst.append([dx * width, dy * height])
+        if "nose" not in src_lm or "nose" not in dst_lm:
+            return mask
 
-        if len(matched_src) == 0:
-            return mask  # can't warp
+        sx, sy = src_lm["nose"]
+        dx, dy = dst_lm["nose"]
+        tx = (dx - sx) * width
+        ty = (dy - sy) * height
 
-        if len(matched_src) >= 3:
-            # Full affine: handles rotation, scale, translation
-            src_pts = np.float32(matched_src[:3])
-            dst_pts = np.float32(matched_dst[:3])
-            M = cv2.getAffineTransform(src_pts, dst_pts)
-        elif len(matched_src) == 2:
-            # 2 points: estimate similarity (rotation + scale + translation)
-            src_pts = np.float32(matched_src)
-            dst_pts = np.float32(matched_dst)
-            M, _ = cv2.estimateAffinePartial2D(
-                src_pts.reshape(-1, 1, 2), dst_pts.reshape(-1, 1, 2)
-            )
-            if M is None:
-                dx = matched_dst[0][0] - matched_src[0][0]
-                dy = matched_dst[0][1] - matched_src[0][1]
-                M = np.float32([[1, 0, dx], [0, 1, dy]])
-        else:
-            # 1 point: translation only
-            dx = matched_dst[0][0] - matched_src[0][0]
-            dy = matched_dst[0][1] - matched_src[0][1]
-            M = np.float32([[1, 0, dx], [0, 1, dy]])
-
-        warped = cv2.warpAffine(mask, M, (width, height), borderValue=0)
-        return warped
+        M = np.float32([[1, 0, tx], [0, 1, ty]])
+        return cv2.warpAffine(mask, M, (width, height), borderValue=0)
 
 
 # ---------------------------------------------------------------------------

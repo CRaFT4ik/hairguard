@@ -134,19 +134,24 @@ class StableMaskTracker:
     """Maintains a stable hair mask that doesn't jitter when hands occlude hair.
 
     Strategy:
-      - When no hand is near the head: update the stable mask from the live
-        segmenter output every frame. Also record head landmark positions.
-      - When a hand IS near the head: freeze the mask and warp it to follow
-        head movement using an affine transform derived from pose landmarks.
-      - When hand leaves: wait `recovery_frames` for the segmenter to
-        recover from occlusion artifacts, then resume live updates.
+      - Continuously saves a "clean" snapshot of the mask every frame (when no hand near head).
+        This snapshot is always 1+ frames behind — so when hand starts affecting landmarks,
+        we already have the last clean state.
+      - When hand is near head: use the frozen snapshot. Don't warp immediately — the snapshot
+        is already at the right position. Only warp if nose moves significantly (real head movement).
+      - When hand leaves: wait recovery_frames for segmenter to recover, then resume live.
     """
 
+    _WARP_THRESHOLD = 0.02  # normalized nose displacement before we bother warping
+
     def __init__(self, recovery_frames: int = 3) -> None:
-        self._stable_mask: Optional[np.ndarray] = None
-        self._stable_landmarks: Optional[dict] = None  # {name: (x, y)}
+        self._clean_mask: Optional[np.ndarray] = None
+        self._clean_nose: Optional[tuple[float, float]] = None
+        self._frozen_mask: Optional[np.ndarray] = None  # snapshot at freeze moment
+        self._frozen_nose: Optional[tuple[float, float]] = None
         self._recovery_frames = recovery_frames
-        self._frames_since_hand_left = 999  # large = no recent hand
+        self._frames_since_hand_left = 999
+        self._was_frozen = False
 
     def update(
         self,
@@ -154,77 +159,70 @@ class StableMaskTracker:
         pose_landmarks: dict,
         hand_near_head: bool,
     ) -> HairMask:
-        """Return the best hair mask for this frame.
-
-        Parameters
-        ----------
-        live_mask: fresh output from HairSegmenter.segment()
-        pose_landmarks: dict of {name: Landmark} from PoseResult.landmarks
-        hand_near_head: True if any wrist is above shoulder level
-        """
-        current_lm = self._extract_head_points(pose_landmarks)
+        current_nose = self._get_nose(pose_landmarks)
 
         if hand_near_head:
             self._frames_since_hand_left = 0
         else:
             self._frames_since_hand_left += 1
 
-        # If no stable mask yet, use live (first frames)
-        if self._stable_mask is None:
-            self._stable_mask = live_mask.get_mask().copy()
-            self._stable_landmarks = current_lm
+        is_frozen = self._frames_since_hand_left <= self._recovery_frames
+
+        # Always update clean snapshot when hands are away
+        if not is_frozen:
+            self._clean_mask = live_mask.get_mask().copy()
+            self._clean_nose = current_nose
+            self._was_frozen = False
             return live_mask
 
-        # Decision: use live or frozen?
-        if self._frames_since_hand_left > self._recovery_frames:
-            # Hand has been gone long enough — live mask is clean, update stable
-            self._stable_mask = live_mask.get_mask().copy()
-            self._stable_landmarks = current_lm
+        # --- Frozen mode ---
+
+        # First frame of freeze: capture the clean snapshot as our frozen baseline
+        if not self._was_frozen:
+            if self._clean_mask is not None:
+                self._frozen_mask = self._clean_mask.copy()
+                self._frozen_nose = self._clean_nose
+            else:
+                # No clean mask yet (hand was up from the start)
+                self._frozen_mask = live_mask.get_mask().copy()
+                self._frozen_nose = current_nose
+            self._was_frozen = True
+
+        if self._frozen_mask is None:
             return live_mask
-        else:
-            # Hand is near head OR just left — use frozen mask, warped to follow head
-            warped = self._warp_mask(
-                self._stable_mask,
-                self._stable_landmarks,
-                current_lm,
-                live_mask.width,
-                live_mask.height,
-            )
-            return HairMask(mask=warped, width=live_mask.width, height=live_mask.height)
 
-    def _extract_head_points(self, lm: dict) -> dict:
-        """Extract nose + ears as (x, y) pixel-normalized coords."""
-        pts = {}
-        for name in ("nose", "left_ear", "right_ear"):
-            l = lm.get(name)
-            if l is not None and (l.confidence or 0) >= 0.5:
-                pts[name] = (l.x, l.y)
-        return pts
+        # Warp only if nose moved significantly (real head movement, not jitter)
+        if current_nose and self._frozen_nose:
+            dx = current_nose[0] - self._frozen_nose[0]
+            dy = current_nose[1] - self._frozen_nose[1]
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist > self._WARP_THRESHOLD:
+                warped = self._warp_by_nose(
+                    self._frozen_mask, self._frozen_nose, current_nose,
+                    live_mask.width, live_mask.height,
+                )
+                return HairMask(mask=warped, width=live_mask.width, height=live_mask.height)
 
-    def _warp_mask(
+        # No significant movement — use frozen mask as-is
+        return HairMask(mask=self._frozen_mask, width=live_mask.width, height=live_mask.height)
+
+    def _get_nose(self, lm: dict) -> Optional[tuple[float, float]]:
+        nose = lm.get("nose")
+        if nose is not None and (nose.confidence or 0) >= 0.5:
+            return (nose.x, nose.y)
+        return None
+
+    def _warp_by_nose(
         self,
         mask: np.ndarray,
-        src_lm: dict,
-        dst_lm: dict,
+        src_nose: tuple[float, float],
+        dst_nose: tuple[float, float],
         width: int,
         height: int,
     ) -> np.ndarray:
-        """Warp frozen mask using nose-only translation.
-
-        Only nose is used — ears and shoulders move when arm is raised,
-        making them unreliable anchors during the freeze period.
-        Nose stays stable because it's on the face, not affected by arm.
-        """
         import cv2
-
-        if "nose" not in src_lm or "nose" not in dst_lm:
-            return mask
-
-        sx, sy = src_lm["nose"]
-        dx, dy = dst_lm["nose"]
-        tx = (dx - sx) * width
-        ty = (dy - sy) * height
-
+        tx = (dst_nose[0] - src_nose[0]) * width
+        ty = (dst_nose[1] - src_nose[1]) * height
         M = np.float32([[1, 0, tx], [0, 1, ty]])
         return cv2.warpAffine(mask, M, (width, height), borderValue=0)
 

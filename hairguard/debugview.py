@@ -385,13 +385,6 @@ def draw_status_panel(
     cv2.putText(img, alert_txt, (col1 + 55, y), _FONT, _FONT_MD, alert_color, 2, cv2.LINE_AA)
     y += lh
 
-    # Hand near head
-    hnh_txt   = "YES" if result.hand_near_head else "NO"
-    hnh_color = COLOR_YELLOW if result.hand_near_head else COLOR_WHITE
-    cv2.putText(img, "Hand near head:", (col1, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
-    cv2.putText(img, hnh_txt, (col1 + 125, y), _FONT, _FONT_MD, hnh_color, 1, cv2.LINE_AA)
-    y += lh
-
     # Fingertips in zone
     fiz_txt   = "YES" if result.fingertips_in_zone else "NO"
     fiz_color = COLOR_YELLOW if result.fingertips_in_zone else COLOR_WHITE
@@ -488,16 +481,7 @@ def main(camera: Optional[int] = None) -> None:
 
     cam = open_camera(camera_indices[current_cam_slot])
 
-    cv2.namedWindow("HairGuard Debug View", cv2.WINDOW_NORMAL)
-    # Window = 960px wide, height preserves camera aspect ratio
-    test_frame = cam.read_frame()
-    if test_frame is not None:
-        fh, fw = test_frame.shape[:2]
-        display_w = 960
-        display_h = int(fh * display_w / fw)
-        cv2.resizeWindow("HairGuard Debug View", display_w, display_h)
-    else:
-        cv2.resizeWindow("HairGuard Debug View", 960, 540)
+    cv2.namedWindow("HairGuard Debug View", cv2.WINDOW_AUTOSIZE)
 
     fps_counter = 0
     fps_value   = 0.0
@@ -561,8 +545,14 @@ def main(camera: Optional[int] = None) -> None:
                             row[f"lm{lm_idx}_z"] = f"{lm.z:.4f}"
                     csv_writer.writerow(row)
 
-            # --- Build display frame ---
-            display = frame.copy()
+            # --- Build display frame (upscale to 960px wide for sharp text) ---
+            fh, fw = frame.shape[:2]
+            target_w = 960
+            if fw < target_w:
+                scale = target_w / fw
+                display = cv2.resize(frame, (target_w, int(fh * scale)), interpolation=cv2.INTER_LINEAR)
+            else:
+                display = frame.copy()
 
             draw_hair_mask(display, hair_mask.dilate(hair_dilation_px))
             # Show nose-anchored zone only when fingertips are in zone (fallback may be active)

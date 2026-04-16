@@ -270,20 +270,28 @@ class GestureAnalyzer:
             result["rotation"] = rotation
 
             # --- Decision rule (adaptive by camera angle) ---
-            # Frontal (fingers visible): pinch + spread + rotation
-            # Side (fingers occluded by hand): skip pinch, use spread + rotation
-            #   because MediaPipe hallucinates finger positions when occluded
-            if is_side_view:
-                frame_positive = (
-                    spread <= spread_thresh
-                    and rotation <= rotation_thresh
-                )
+            # Pinch threshold scales with yaw_ratio:
+            #   Frontal (yaw~0.45): strict pinch <= 0.25 (fingers clearly visible)
+            #   45° angle (yaw~0.3): relaxed pinch <= 0.40 (fingers partially visible)
+            #   Side (yaw<0.2): skip pinch entirely (fingers hidden behind palm)
+            #
+            # Linear interpolation: at yaw=0.45 → pinch_t=0.25, at yaw=0.2 → pinch_t=0.55
+            # Below yaw=0.2 → pinch check skipped
+            if yaw_ratio < 0.2:
+                pinch_ok = True  # skip pinch — fingers invisible
+            elif yaw_ratio >= 0.45:
+                pinch_ok = pinch_smooth <= self._pinch_threshold  # strict
             else:
-                frame_positive = (
-                    pinch_smooth <= self._pinch_threshold
-                    and spread <= spread_thresh
-                    and rotation <= rotation_thresh
-                )
+                # Interpolate: yaw 0.2→0.45 maps to pinch_t 0.55→0.25
+                t = (yaw_ratio - 0.2) / (0.45 - 0.2)  # 0 at side, 1 at frontal
+                adaptive_pinch_t = 0.55 - t * (0.55 - self._pinch_threshold)
+                pinch_ok = pinch_smooth <= adaptive_pinch_t
+
+            frame_positive = (
+                pinch_ok
+                and spread <= spread_thresh
+                and rotation <= rotation_thresh
+            )
 
             if frame_positive:
                 self._consecutive_positive += 1

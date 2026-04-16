@@ -243,7 +243,7 @@ class NoseAnchoredHairZone:
             )
         self._frame_count += 1
 
-    _ZONE_MARGIN = 1.15  # 15% expansion in each direction
+    _ZONE_MARGIN = 1.25  # 25% expansion in each direction
 
     def _point_in_zone(
         self,

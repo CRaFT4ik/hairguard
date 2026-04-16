@@ -142,7 +142,7 @@ class StableMaskTracker:
         recover from occlusion artifacts, then resume live updates.
     """
 
-    def __init__(self, recovery_frames: int = 10) -> None:
+    def __init__(self, recovery_frames: int = 3) -> None:
         self._stable_mask: Optional[np.ndarray] = None
         self._stable_landmarks: Optional[dict] = None  # {name: (x, y)}
         self._recovery_frames = recovery_frames
@@ -209,30 +209,48 @@ class StableMaskTracker:
         width: int,
         height: int,
     ) -> np.ndarray:
-        """Warp frozen mask to follow head movement via translation.
+        """Warp frozen mask to follow head movement.
 
-        Uses nose as primary anchor. If nose unavailable, uses ear midpoint.
+        Uses affine transform from 3 points (nose + ears) when available.
+        Falls back to 2-point similarity, then 1-point translation.
         """
         import cv2
 
-        # Find best anchor point
-        src_pt = None
-        dst_pt = None
+        # Collect matched point pairs
+        matched_src = []
+        matched_dst = []
         for key in ("nose", "left_ear", "right_ear"):
             if key in src_lm and key in dst_lm:
-                src_pt = src_lm[key]
-                dst_pt = dst_lm[key]
-                break
+                sx, sy = src_lm[key]
+                dx, dy = dst_lm[key]
+                matched_src.append([sx * width, sy * height])
+                matched_dst.append([dx * width, dy * height])
 
-        if src_pt is None or dst_pt is None:
-            return mask  # can't warp, return as-is
+        if len(matched_src) == 0:
+            return mask  # can't warp
 
-        # Translation in pixels
-        dx = (dst_pt[0] - src_pt[0]) * width
-        dy = (dst_pt[1] - src_pt[1]) * height
+        if len(matched_src) >= 3:
+            # Full affine: handles rotation, scale, translation
+            src_pts = np.float32(matched_src[:3])
+            dst_pts = np.float32(matched_dst[:3])
+            M = cv2.getAffineTransform(src_pts, dst_pts)
+        elif len(matched_src) == 2:
+            # 2 points: estimate similarity (rotation + scale + translation)
+            src_pts = np.float32(matched_src)
+            dst_pts = np.float32(matched_dst)
+            M, _ = cv2.estimateAffinePartial2D(
+                src_pts.reshape(-1, 1, 2), dst_pts.reshape(-1, 1, 2)
+            )
+            if M is None:
+                dx = matched_dst[0][0] - matched_src[0][0]
+                dy = matched_dst[0][1] - matched_src[0][1]
+                M = np.float32([[1, 0, dx], [0, 1, dy]])
+        else:
+            # 1 point: translation only
+            dx = matched_dst[0][0] - matched_src[0][0]
+            dy = matched_dst[0][1] - matched_src[0][1]
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
 
-        # Apply translation via affine warp
-        M = np.float32([[1, 0, dx], [0, 1, dy]])
         warped = cv2.warpAffine(mask, M, (width, height), borderValue=0)
         return warped
 

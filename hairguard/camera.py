@@ -27,6 +27,14 @@ class CameraManager:
         self._cap = cv2.VideoCapture(camera_index, cv2.CAP_ANY)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open camera {camera_index}")
+        # Ask the backend for a 1-frame internal buffer so read() returns
+        # the freshest available frame. Not all backends honor this, but
+        # when supported it prevents accumulated stale frames when the
+        # consumer reads slower than the camera produces.
+        try:
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
 
     def read_frame(self) -> np.ndarray | None:
         ret, frame = self._cap.read()

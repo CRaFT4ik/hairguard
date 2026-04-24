@@ -254,10 +254,17 @@ class HairGuardApp:
             self._root.after(self._TICK_MS, self._tick)
             return
 
-        # Get the latest frame (non-blocking)
-        try:
-            frame = self._frame_queue.get_nowait()
-        except queue.Empty:
+        # Drain the queue and keep only the newest frame so detection
+        # always runs on the freshest camera data. DebugView reads frames
+        # directly in a tight loop, so to keep engine behaviour identical
+        # here we must not feed the analyzer a stale queued frame.
+        frame = None
+        while True:
+            try:
+                frame = self._frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        if frame is None:
             self._root.after(self._TICK_MS, self._tick)
             return
 

@@ -158,6 +158,20 @@ class GestureAnalyzer:
         self._state = new_state
         self._state_entered_at = now
 
+    def _reset_rolling(self) -> None:
+        """Clear rolling feature buffers.
+
+        Called when the hand is absent from the hair zone so stale low-pinch
+        history from a prior visit does not bleed into the next one and cause
+        a fast false positive. FPS-independent: both debug (30 fps) and
+        prod (10 fps) pipelines behave the same regardless of how many
+        frames of history the window would otherwise hold.
+        """
+        self._pinch_buf.clear()
+        self._rotation_buf.clear()
+        self._last_hand_angle = None
+        self._consecutive_positive = 0
+
     def _detect(
         self,
         pose_result: PoseResult,
@@ -175,12 +189,12 @@ class GestureAnalyzer:
 
         # Layer 1: Hand present?
         if not hand_results:
-            self._consecutive_positive = 0
+            self._reset_rolling()
             return result
 
         # Layer 2: Head located?
         if not pose_result.detected:
-            self._consecutive_positive = 0
+            self._reset_rolling()
             return result
 
         # Layer 3: Compute hair zone
@@ -258,6 +272,7 @@ class GestureAnalyzer:
                 result["detected"] = True
             return result  # return after first hand with features computed
 
-        # No hand matched
-        self._consecutive_positive = 0
+        # No hand matched the zone this frame — clear rolling history so
+        # a later re-entry starts from a clean slate.
+        self._reset_rolling()
         return result

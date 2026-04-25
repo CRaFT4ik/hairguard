@@ -7,8 +7,10 @@ Linux:   creates/removes a .desktop file in ~/.config/autostart/.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,15 +23,12 @@ _DESKTOP_NAME = "hairguard.desktop"
 
 def _windows_startup_dir() -> Path:
     """Return the Windows per-user Startup folder path."""
-    # APPDATA is e.g. C:\Users\<user>\AppData\Roaming
-    # Startup folder is under ..\Roaming\Microsoft\Windows\Start Menu\Programs\Startup
     appdata = os.environ.get("APPDATA", "")
     if appdata:
         candidate = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
         if candidate.exists():
             return candidate
 
-    # Fallback: use expandvars with the shell keyword
     startup = os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup")
     return Path(startup)
 
@@ -46,25 +45,40 @@ def _desktop_path() -> Path:
     return _linux_autostart_dir() / _DESKTOP_NAME
 
 
-def _hairguard_executable() -> str:
-    """Best-effort path to the hairguard executable / invocation."""
-    # If running inside a virtualenv the script will be on PATH already.
-    # We try to find it explicitly so the .bat / .desktop works even when the
-    # venv is not activated by the shell that runs the startup entry.
+def _hairguard_command() -> tuple[list[str], Optional[str]]:
+    """Return (argv, cwd) for invoking the hairguard CLI from autostart.
+
+    Prefers an installed `hairguard` script when available; otherwise
+    falls back to `python -m hairguard` with the project directory as
+    cwd, so the launcher works even when the package was not pip-installed
+    (e.g. when the user runs the app via `python -m hairguard start`).
+    """
     scripts_dir = Path(sys.executable).parent
+
     if sys.platform == "win32":
         candidate = scripts_dir / "hairguard.exe"
         if candidate.exists():
-            return str(candidate)
-        candidate = scripts_dir / "hairguard"
-        if candidate.exists():
-            return str(candidate)
+            return ([str(candidate)], None)
     else:
         candidate = scripts_dir / "hairguard"
         if candidate.exists():
-            return str(candidate)
-    # Fallback: hope it's on PATH
-    return "hairguard"
+            return ([str(candidate)], None)
+
+    # Fallback: invoke the module via the same Python interpreter.
+    import hairguard as _pkg
+
+    package_parent = Path(_pkg.__file__).resolve().parent.parent
+    return ([sys.executable, "-m", "hairguard"], str(package_parent))
+
+
+def _windows_quote(arg: str) -> str:
+    """Quote a single argument for a Windows .bat `start` line."""
+    if not arg:
+        return '""'
+    if any(ch in arg for ch in ' \t"&|<>^()'):
+        escaped = arg.replace('"', '""')
+        return f'"{escaped}"'
+    return arg
 
 
 # ---------------------------------------------------------------------------
@@ -74,24 +88,36 @@ def _hairguard_executable() -> str:
 
 def autostart_on() -> None:
     """Enable HairGuard autostart for the current user."""
-    exe = _hairguard_executable()
+    argv, cwd = _hairguard_command()
+    full_argv = argv + ["start", "--background"]
 
     if sys.platform == "win32":
         bat = _bat_path()
         bat.parent.mkdir(parents=True, exist_ok=True)
-        bat.write_text(
-            f'@echo off\nstart "" "{exe}" start --background\n',
-            encoding="utf-8",
-        )
+
+        quoted = " ".join(_windows_quote(a) for a in full_argv)
+        lines = ["@echo off"]
+        if cwd:
+            # Working directory is required for `python -m hairguard` when
+            # the package is not installed system-wide.
+            lines.append(f'cd /d "{cwd}"')
+        # `start ""` opens a new process without inheriting the console,
+        # so the user is not left with a stray cmd window at boot.
+        lines.append(f'start "" {quoted}')
+        bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
         print(f"Автозапуск включён: {bat}")
     else:
         desktop = _desktop_path()
         desktop.parent.mkdir(parents=True, exist_ok=True)
+
+        exec_str = " ".join(shlex.quote(a) for a in full_argv)
+        path_line = f"Path={cwd}\n" if cwd else ""
         desktop.write_text(
             "[Desktop Entry]\n"
             f"Name={_APP_NAME}\n"
             "Comment=Hair-pulling detection assistant\n"
-            f"Exec={exe} start --background\n"
+            f"Exec={exec_str}\n"
+            f"{path_line}"
             "Icon=\n"
             "Terminal=false\n"
             "Type=Application\n"

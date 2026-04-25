@@ -193,16 +193,37 @@ class HairGuardApp:
     # ------------------------------------------------------------------
 
     def _camera_loop(self) -> None:
-        """Daemon thread: continuously reads frames and puts them in the queue."""
+        """Daemon thread: continuously reads frames and puts them in the queue.
+
+        Survives camera disappearance (system sleep, USB unplug). After a
+        short streak of read failures we close the capture and re-open it
+        on a backoff schedule, retrying forever until the user explicitly
+        stops the app.
+        """
+        from hairguard.camera import CameraManager
+
         fps: float = float(self._config.get("detection", "fps") or 10)
         sleep_sec = 1.0 / fps
         consecutive_failures = 0
-        max_failures = 30  # ~6 seconds at 5 FPS
+        # ~2 seconds of failures before assuming the camera is gone
+        reopen_after = max(int(2.0 * fps), 5)
+        # Backoff between reopen attempts — grows on repeated failures
+        reopen_backoff = 1.0
+        max_reopen_backoff = 30.0
+        announced_lost = False
 
         while self._running:
-            frame = self._camera.read_frame()
+            try:
+                frame = self._camera.read_frame()
+            except Exception:
+                frame = None
+
             if frame is not None:
+                if announced_lost:
+                    print("[app] Камера снова доступна.")
+                    announced_lost = False
                 consecutive_failures = 0
+                reopen_backoff = 1.0
                 # Drop the oldest frame if the queue is full, then put the new one
                 if self._frame_queue.full():
                     try:
@@ -213,14 +234,48 @@ class HairGuardApp:
                     self._frame_queue.put_nowait(frame)
                 except queue.Full:
                     pass  # Race condition — ignore
-            else:
-                consecutive_failures += 1
-                if consecutive_failures >= max_failures:
-                    print("[app] Камера отключена или недоступна. Завершаю работу.")
-                    self._on_exit()
-                    return
+                time.sleep(sleep_sec)
+                continue
 
-            time.sleep(sleep_sec)
+            consecutive_failures += 1
+            if consecutive_failures < reopen_after:
+                time.sleep(sleep_sec)
+                continue
+
+            # Camera looks gone. Drop any stale queued frames so the next
+            # tick after recovery does not analyze pre-sleep video.
+            while True:
+                try:
+                    self._frame_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+            if not announced_lost:
+                print(
+                    "[app] Камера недоступна (возможно, система ушла в сон). "
+                    "Жду подключения..."
+                )
+                announced_lost = True
+
+            try:
+                self._camera.release()
+            except Exception:
+                pass
+
+            # Sleep the backoff in small chunks so shutdown is responsive.
+            slept = 0.0
+            while slept < reopen_backoff and self._running:
+                time.sleep(min(0.25, reopen_backoff - slept))
+                slept += 0.25
+            if not self._running:
+                return
+
+            try:
+                self._camera = CameraManager(camera_index=self._camera_index)
+                consecutive_failures = 0
+                reopen_backoff = 1.0
+            except Exception:
+                reopen_backoff = min(reopen_backoff * 2.0, max_reopen_backoff)
 
     # ------------------------------------------------------------------
     # Detection tick (main thread, scheduled via root.after)

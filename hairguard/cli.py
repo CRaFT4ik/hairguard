@@ -197,20 +197,40 @@ def _get_uptime(pid: int) -> str:
             created_unix = (ft_val - EPOCH_DIFF) / 1e7
             elapsed = time.time() - created_unix
         else:
-            import os
-
-            with open(f"/proc/{pid}/stat") as f:
-                fields = f.read().split()
-            # Field 22 (0-indexed 21) = starttime in clock ticks since boot.
-            starttime_ticks = int(fields[21])
-            clk_tck = os.sysconf("SC_CLK_TCK")
-            with open("/proc/uptime") as f:
-                uptime_sec = float(f.read().split()[0])
-            elapsed = uptime_sec - starttime_ticks / clk_tck
+            elapsed = _unix_elapsed(pid)
 
         return _fmt_elapsed(elapsed)
     except Exception:
         return ""
+
+
+def _unix_elapsed(pid: int) -> float:
+    """Process elapsed seconds on Unix-like systems (Linux, macOS, BSD).
+
+    Prefers /proc/<pid>/stat on Linux for speed; otherwise (or as a
+    fallback) shells out to `ps -o etimes=` which is supported on macOS,
+    BSD, and Linux and returns elapsed seconds directly.
+    """
+    import os
+
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().split()
+            starttime_ticks = int(fields[21])
+            clk_tck = os.sysconf("SC_CLK_TCK")
+            with open("/proc/uptime") as f:
+                uptime_sec = float(f.read().split()[0])
+            return uptime_sec - starttime_ticks / clk_tck
+        except (FileNotFoundError, OSError, IndexError, ValueError):
+            pass  # fall through to ps
+
+    out = subprocess.check_output(
+        ["ps", "-o", "etimes=", "-p", str(pid)],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
+    return float(out)
 
 
 def _fmt_elapsed(seconds: float) -> str:

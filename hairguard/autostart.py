@@ -19,6 +19,8 @@ from typing import Optional
 _APP_NAME = "HairGuard"
 _BAT_NAME = "hairguard.bat"
 _DESKTOP_NAME = "hairguard.desktop"
+_MACOS_LABEL = "com.eldar.hairguard"
+_PLIST_NAME = f"{_MACOS_LABEL}.plist"
 
 
 def _windows_startup_dir() -> Path:
@@ -37,12 +39,28 @@ def _linux_autostart_dir() -> Path:
     return Path.home() / ".config" / "autostart"
 
 
+def _macos_launchagents_dir() -> Path:
+    return Path.home() / "Library" / "LaunchAgents"
+
+
 def _bat_path() -> Path:
     return _windows_startup_dir() / _BAT_NAME
 
 
 def _desktop_path() -> Path:
     return _linux_autostart_dir() / _DESKTOP_NAME
+
+
+def _plist_path() -> Path:
+    return _macos_launchagents_dir() / _PLIST_NAME
+
+
+def _xml_escape(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def _hairguard_command() -> tuple[list[str], Optional[str]]:
@@ -106,6 +124,39 @@ def autostart_on() -> None:
         lines.append(f'start "" {quoted}')
         bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
         print(f"Автозапуск включён: {bat}")
+    elif sys.platform == "darwin":
+        plist = _plist_path()
+        plist.parent.mkdir(parents=True, exist_ok=True)
+
+        program_args = "".join(
+            f"        <string>{_xml_escape(a)}</string>\n" for a in full_argv
+        )
+        wd_block = (
+            f"    <key>WorkingDirectory</key>\n"
+            f"    <string>{_xml_escape(cwd)}</string>\n"
+            if cwd
+            else ""
+        )
+        plist.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0">\n'
+            "<dict>\n"
+            f"    <key>Label</key>\n    <string>{_MACOS_LABEL}</string>\n"
+            f"    <key>ProgramArguments</key>\n    <array>\n{program_args}    </array>\n"
+            f"{wd_block}"
+            "    <key>RunAtLoad</key>\n    <true/>\n"
+            "    <key>KeepAlive</key>\n    <false/>\n"
+            "</dict>\n"
+            "</plist>\n",
+            encoding="utf-8",
+        )
+        print(f"Автозапуск включён: {plist}")
+        print(
+            "Чтобы запустить сейчас (без перезагрузки): "
+            f"launchctl load -w \"{plist}\""
+        )
     else:
         desktop = _desktop_path()
         desktop.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +188,17 @@ def autostart_off() -> None:
             print(f"Автозапуск отключён: {bat}")
         else:
             print("Автозапуск уже отключён.")
+    elif sys.platform == "darwin":
+        plist = _plist_path()
+        if plist.exists():
+            plist.unlink()
+            print(f"Автозапуск отключён: {plist}")
+            print(
+                "Если запускали через launchctl — выгрузите: "
+                f"launchctl unload \"{plist}\""
+            )
+        else:
+            print("Автозапуск уже отключён.")
     else:
         desktop = _desktop_path()
         if desktop.exists():
@@ -150,4 +212,6 @@ def autostart_status() -> bool:
     """Return True if the autostart entry exists."""
     if sys.platform == "win32":
         return _bat_path().exists()
+    if sys.platform == "darwin":
+        return _plist_path().exists()
     return _desktop_path().exists()

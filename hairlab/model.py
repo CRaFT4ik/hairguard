@@ -497,6 +497,55 @@ def export_onnx(
         # export into a crash for reasons that have nothing to do with us.
         verbose=False,
     )
+    strip_source_metadata(path)
+
+
+def strip_source_metadata(path: Union[str, Path]) -> int:
+    """Remove source locations from an exported graph. Returns strings cleared.
+
+    The dynamo exporter records, for every node, the Python stack trace that
+    produced it — absolute file paths and all. On the machine that trained
+    this model those paths read
+    ``C:\\Users\\<name>\\...\\hairlab\\model.py``, so a model shipped to
+    anyone else carries the trainer's username and directory layout with it.
+
+    The model is meant to be distributed, so this is not a cosmetic concern:
+    it is the trainer's personal data travelling inside an artifact whose
+    whole purpose is to be handed to strangers. None of it is needed to run
+    the graph.
+    """
+    import onnx
+
+    model = onnx.load(str(path), load_external_data=False)
+    cleared = 0
+
+    def wipe(obj) -> None:
+        nonlocal cleared
+        if getattr(obj, "doc_string", ""):
+            obj.doc_string = ""
+            cleared += 1
+        props = getattr(obj, "metadata_props", None)
+        if props:
+            cleared += len(props)
+            del props[:]
+
+    wipe(model)
+    wipe(model.graph)
+    for node in model.graph.node:
+        wipe(node)
+    for container in (model.graph.input, model.graph.output, model.graph.value_info):
+        for item in container:
+            wipe(item)
+    for initializer in model.graph.initializer:
+        wipe(initializer)
+
+    # The producer name is harmless; the version string is not identifying
+    # either, but the training-time working directory can appear here.
+    model.producer_name = "hairlab"
+    model.producer_version = ""
+
+    onnx.save(model, str(path))
+    return cleared
 
 
 def save_checkpoint(module: TwistModule, path: Union[str, Path]) -> None:

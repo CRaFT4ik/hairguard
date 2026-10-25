@@ -1,0 +1,8 @@
+{
+  "threshold": 0.9660314917564392,
+  "feature_dim": 96,
+  "seq_len": 20,
+  "trained_at": "2026-10-24T18:38:42",
+  "n_train": 547,
+  "n_test": 180
+}

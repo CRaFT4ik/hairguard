@@ -41,6 +41,19 @@ import numpy as np
 # ~/.hairguard/models, which holds the downloaded MediaPipe task files.
 DEFAULT_DIR = Path.home() / ".hairguard" / "trained"
 
+# A model ships with the package so the app detects on day one, before the
+# user has collected anything. Their own model wins the moment they train
+# one: hair-pulling differs enormously between people, and the bundled
+# weights were fitted to someone else's hands.
+BUNDLED_DIR = Path(__file__).parent / "models"
+
+
+def _default_directory() -> Path:
+    """Where to look for a model: the user's own first, then the bundled one."""
+    if (DEFAULT_DIR / _META_NAME).is_file():
+        return DEFAULT_DIR
+    return BUNDLED_DIR
+
 _META_NAME = "model.json"
 _ONNX_NAME = "twistnet.onnx"
 _SCORE_OUTPUT = "score"
@@ -166,7 +179,7 @@ class TwistModel:
         currently produces, which is the check that matters: the model and the
         extractor have to be the same vintage.
         """
-        directory = Path(directory) if directory is not None else DEFAULT_DIR
+        directory = Path(directory) if directory is not None else _default_directory()
         if not directory.is_dir():
             raise ModelUnavailable(f"каталог модели {directory} не найден")
 

@@ -36,3 +36,6 @@ include = ["hairguard*", "hairlab*"]
 
 [tool.setuptools.package-data]
 "hairlab.server" = ["static/*"]
+# A trained model ships with the package so detection works before the user
+# has collected anything of their own.
+"hairguard" = ["models/*"]

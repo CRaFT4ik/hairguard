@@ -2,32 +2,60 @@
 
 🇷🇺 [Русская версия](README.ru.md)
 
-Desktop app to help combat trichotillomania using computer vision.
+A desktop tool for people working to interrupt trichotillomania — compulsive
+hair-pulling.
 
-HairGuard watches your webcam in the background and fires a fullscreen alert the moment your fingertips touch your hair zone — before the habit completes. It tracks every episode so you can see your progress over time.
+The behaviour is usually automatic. It starts without the person noticing and
+is often over before they do. HairGuard watches a webcam in the background,
+recognises hair-twisting as it begins, and interrupts with a fullscreen
+message and a repeating chime that stops the moment the hand moves away.
+Everything runs on the machine; no video leaves it and none is stored unless
+you explicitly turn on recording.
 
----
-
-## How It Works
-
-Three MediaPipe models run on every frame:
-
-- **PoseLandmarker** — locates head, shoulders, and wrists
-- **HandLandmarker** — tracks all 21 hand landmarks, including fingertips
-- **FaceLandmarker** — maps the 468-point face mesh to compute the precise forehead/hairline boundary
-
-A 6-layer pipeline filters each frame: hand present → head located → fingertips above hairline → pinch gesture detected → not gripping an object → debounce. An alert fires only when all layers pass simultaneously.
+It is not a treatment. It is an interruption, meant to be used alongside one.
 
 ---
 
-## Features
+## How detection works
 
-- Fullscreen semi-transparent overlay alert with 200+ unique rotating phrases
-- Statistics tracking with daily summaries, trend comparison, and hourly histogram
-- System tray icon — pause with auto-resume, quick stats on hover
-- Debug view to inspect the detection pipeline live
-- Autostart on login (Windows and Linux)
-- Single running instance enforced via PID file
+Three MediaPipe models run on each frame — pose, hands and face mesh — giving
+the position of the head, the hairline and all 21 landmarks of each hand.
+
+A geometric gate asks the cheap question first: are the fingertips inside the
+hair zone above the hairline? Only then does the detector ask the hard one:
+is this twisting a strand, or just a hand resting on the head?
+
+That second question is answered by a small temporal convolutional network
+trained on labelled examples. It reads a sliding window of hand and head
+geometry — normalised into a head-relative frame, so it does not matter how
+far away you sit or how your head is tilted — and returns a probability.
+A state machine then requires the signal to be sustained before alerting, and
+holds the alert briefly after the hand leaves.
+
+Measured on capture days the model never saw during training:
+
+| | catches | false alarms on a resting hand | time to alert |
+|---|---|---|---|
+| Geometric rule alone | 37.7% | 10.3% | 1.20 s |
+| Trained model | **80.7%** | **6.9%** | **0.72 s** |
+
+A trained model ships with the package, in [`hairguard/models/`](hairguard/models),
+so detection works on first run. It contains network weights and a threshold —
+no video, no images, no personal data of any kind. If you train your own it
+takes precedence automatically.
+
+If no model can be loaded at all, the app runs on the geometric rule and says
+so at startup, so a fallback is never mistaken for the model performing badly.
+
+### The bundled model is personal to whoever trained it
+
+Those numbers come from one person's data: their hair, their camera, their
+habits. Hair-pulling varies enormously between people — scalp, brows, lashes,
+one hand or both, twisting or plucking — so treat the bundled model as a
+starting point that works out of the box, not as the ceiling.
+
+Training one on your own data is the intended path, and the tooling for it is
+included.
 
 ---
 
@@ -36,181 +64,136 @@ A 6-layer pipeline filters each frame: hand present → head located → fingert
 Python 3.11+ required.
 
 ```bash
-# From PyPI
-pip install hairguard
-
-# From source
-git clone <repo>
-cd hair
+git clone https://github.com/CRaFT4ik/hairguard
+cd hairguard
 pip install -e .
 
-# Linux Wayland — overlay support
-pip install hairguard[wayland]
+# To collect data and train a model of your own
+pip install -e ".[lab]" -e ".[train]"
 ```
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
-# Start detection with tray icon
-python -m hairguard start
-
-# Open debug view (live camera + landmark overlay)
-python -m hairguard.debugview
+python -m hairguard start          # detection, with a tray icon
+python -m hairguard cameras        # list cameras if autodetect picks wrong
+python -m hairguard stats          # episodes today vs yesterday
+python -m hairguard stop
 ```
 
----
-
-## CLI Commands
-
-```bash
-hairguard start                  # Start detection (foreground + tray)
-hairguard start --camera 1       # Use a specific camera index
-hairguard start --background     # Start as background process
-hairguard stop                   # Stop running instance
-hairguard status                 # Show if running, PID, uptime
-hairguard cameras                # List available cameras
-hairguard collect on             # Start dataset collection (see hairlab/)
-hairguard collect off            # Stop it
-hairguard collect status         # Is it recording, and how many clips so far
-hairguard stats                  # Today's stats vs. yesterday
-hairguard stats --last 7d        # Last 7 days
-hairguard stats --from 2026-04-01 --to 2026-04-15
-hairguard stats --compare --last 2w
-hairguard config                 # Print current config
-hairguard config --edit          # Open config.yaml in $EDITOR
-hairguard autostart on           # Add to login autostart
-hairguard autostart off          # Remove from autostart
-hairguard debug                  # Launch debug view
-```
+At startup the app prints which camera it chose and which detector is active.
 
 ---
 
 ## Configuration
 
-Config file is created at `~/.hairguard/config.yaml` on first run.
+`~/.hairguard/config.yaml`, created on first run.
 
 ```yaml
-camera: auto                     # Camera index, or "auto" to detect one
-                                 #   (see: hairguard cameras)
-camera_width: 1280               # Capture resolution. Detail on the hand is
-camera_height: 720               #   what limits dataset quality
+camera: auto                     # index, or "auto" to find a working one
+camera_width: 1280               # detail on the hand limits model quality
+camera_height: 720
 
 detection:
-  trigger_delay_sec: 0.8         # Seconds hand must be in hair zone before alert fires
-  dismiss_delay_sec: 2.5         # Seconds alert stays after hand leaves
-  fps: 10                        # Frames per second processed
-  process_width: 1280            # Width the detectors see; lower it to save CPU
-  min_confidence: 0.5            # Minimum landmark confidence to trust a detection
-  pinch_threshold: 0.4           # Thumb-index distance / hand scale — below = pinching
-  min_presence_score: 0.7        # Minimum presence score to trust fingertip position
-  hair_zone_offset: 0.4          # How far above forehead to extend hair zone
-                                 #   (fraction of shoulder width)
+  fps: 10
+  trigger_delay_sec: 0.8         # sustained detection before alerting
+  dismiss_delay_sec: 2.5         # alert persists this long after the hand leaves
+  model:
+    enabled: true                # false falls back to the geometric rule
+    min_frames: 3                # frames of evidence before the model is asked
+    trigger_delay_sec: 0.3
 
 alert:
-  opacity: 0.7                   # Overlay opacity (0.0–1.0)
-  text_color: "#ffffff"          # Alert text color
-  sound: true                    # Repeating chirp while your hand is at your
-                                 #   head; stops the moment you move it away
-
-pause:
-  auto_resume_minutes: 15        # Tray pause auto-resumes after this many minutes
+  opacity: 0.7
+  sound: true                    # repeats while the hand is at the head
 ```
 
-Invalid values are reported at startup; the affected field falls back to its default.
-
-### Camera selection
-
-With `camera: auto`, HairGuard probes each index at startup and picks the first one
-showing a live image. Opening a camera successfully is not enough — a device can
-return all-black frames, and a virtual camera can serve a single frozen placeholder.
-Both look like a working camera to `read()`, so the probe samples several consecutive
-frames and keeps only a source that both carries content and changes between frames,
-as any real sensor does through its noise. The probe adds a few seconds to startup.
-
-Setting an explicit index skips probing entirely and is always honoured, even if that
-camera turns out to be blind.
+Invalid values are reported at startup and fall back to their defaults.
 
 ---
 
-## Detection Pipeline
+## Building a model for yourself
 
-Each frame passes through 6 layers before an alert is triggered:
+The `hairlab` package covers the whole path from webcam to a running model.
 
-| Layer | Check |
-|-------|-------|
-| 1 | Hand detected with sufficient confidence |
-| 2 | Head located (ears + face mesh found) |
-| 3 | Hair zone computed from FaceMesh forehead contour |
-| 4 | Thumb tip or index fingertip inside the hair zone |
-| 5 | Pinch gesture detected (thumb-index distance below threshold) |
-| 6 | Debounce — sustained for `trigger_delay_sec` |
-
-The grip filter (originally layer 6 in v2 design) distinguishes twisting from holding an object by checking whether the middle/ring/pinky fingers are curled. If 2 or more are curled, the frame is treated as object-gripping and ignored.
-
-When HandLandmarker loses tracking (e.g., hand behind the head), Pose wrist proximity acts as a supplementary low-confidence signal.
-
----
-
-## Debug View
+**1. Collect.** Recording is off until you switch it on, and the state is
+announced loudly at every start.
 
 ```bash
-python -m hairguard.debugview
-# or
-hairguard debug
+python -m hairguard collect on
 ```
 
-Shows a live camera window with:
+Clips of about two seconds are kept whenever fingertips are in the hair zone —
+with no judgement about what the hand was doing, since judging it here would
+only teach the model what the existing detector already believes. Each clip is
+a square crop that follows the hand, plus the landmarks behind it. Roughly
+200 KB per clip.
 
-- 21-point hand skeleton with connections
-- Hair zone boundary polygon
-- Pinch indicator and finger curl state per finger
-- Fingertip-in-zone highlight
-- Layer-by-layer pass/fail status
-
----
-
-## Statistics
+**2. Label.** A browser interface plays each clip as a loop for keyboard
+labelling: twisting, resting, scratching, holding an object, or unclear.
 
 ```bash
-hairguard stats                        # Today vs. yesterday
-hairguard stats --date 2026-04-10      # Specific date
-hairguard stats --last 7d              # Last 7 days
-hairguard stats --last 4w              # Last 4 weeks
-hairguard stats --compare --last 2w    # Compare two consecutive periods
+python -m hairlab label
+python -m hairlab stats     # progress, and whether the data is usable
 ```
 
-Output includes episode count, total time, average duration, and an hourly histogram. Trends are color-coded (green = improvement).
+A few hundred clips per class is a workable minimum. Expect a couple of weeks
+of ordinary use to reach that.
 
-The tray icon tooltip shows a live today summary: "Today: 14 episodes, 5m 20s".
+**3. Train.**
 
-Episodes are stored in `~/.hairguard/hairguard.db` (SQLite).
+```bash
+python -m hairlab train --cv      # honest estimate, cross-validated by day
+python -m hairlab train           # final model, written to ~/.hairguard/trained
+```
+
+Two things about the evaluation are worth knowing, because getting them wrong
+produces numbers that look excellent and mean nothing.
+
+Splits are by **whole capture day**, never random. Clips seconds apart are
+nearly identical, so a random split trains and tests on the same episode.
+
+The reported metric is the **false-alarm rate per kind of negative** —
+separately for a resting hand, scratching, and holding an object — not overall
+accuracy. Accuracy averages away the one failure that matters: a tool that
+interrupts you while you are simply resting your hand on your head will be
+turned off, whatever its accuracy says.
+
+The operating point is likewise not chosen to maximise F1. F1 prices a missed
+detection and a false alarm equally; for something that interrupts you with a
+fullscreen message they are nowhere near equal. The shipped threshold is the
+lowest one that keeps false alarms on a resting hand under 5%.
 
 ---
 
-## Platform Support
+## Privacy
+
+- All processing is local. Nothing is uploaded, and the app makes no network
+  requests except to download the MediaPipe models on first run.
+- No video is recorded unless you turn collection on.
+- Collected clips, labels, episode history and the trained model live in
+  `~/.hairguard/` and are never written into the repository.
+- Episode statistics are counts and timestamps in a local SQLite file.
+
+---
+
+## Platform support
 
 | Platform | Status |
 |----------|--------|
 | Windows 10/11 | Full support |
 | Linux (X11) | Full support |
-| Linux (Wayland) | Supported via `gtk-layer-shell` — install with `pip install hairguard[wayland]` |
-
-On Wayland without `gtk-layer-shell`, the overlay falls back to basic tkinter which may not stay on top. A warning is shown at startup.
+| Linux (Wayland) | Overlay via `gtk-layer-shell` — `pip install hairguard[wayland]` |
+| macOS | Autostart and statistics supported; overlay less tested |
 
 ---
 
-## Dependencies
+## License
 
-| Package | Purpose |
-|---------|---------|
-| mediapipe | Pose, Hand, and Face landmark detection |
-| opencv-python | Camera capture |
-| pystray + Pillow | System tray icon |
-| pyyaml | Config file |
-| colorama | Colored terminal output |
-| plyer | System notifications |
-| tkinter | Alert overlay (built into Python) |
+[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal use, research,
+education, charities and public health organisations.
 
-Optional: `PyGObject` — Wayland overlay backend (`pip install hairguard[wayland]`).
+**Commercial use requires a separate paid agreement.** Contact
+eldar.tim@gmail.com.

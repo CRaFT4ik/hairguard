@@ -181,6 +181,62 @@ def cmd_collect(args: argparse.Namespace) -> None:
         print("Приложение подхватит это в течение секунды.")
 
 
+def cmd_model(_args: argparse.Namespace) -> None:
+    """Report which detector the app will use, and why.
+
+    The tray menu says the same thing, but a menu entry cannot be scripted
+    and cannot be read before the app starts. A model that quietly failed to
+    load looks exactly like a model that works badly, so there has to be a
+    way to ask.
+    """
+    from hairguard.config import Config
+    from hairguard.twistnet import DEFAULT_DIR, ModelUnavailable, TwistModel, load_configured
+
+    config = Config()
+
+    # What the app will do, first — that is the question being asked.
+    _, status = load_configured(config)
+    print(f"Детектор:   {status}")
+    print(f"Каталог:    {DEFAULT_DIR}")
+
+    # Then the artefacts themselves, loaded regardless of the switch: a user
+    # who turned the model off still wants to know whether there is one.
+    try:
+        model = TwistModel.load()
+    except ModelUnavailable as exc:
+        print(f"Артефакты:  недоступны — {exc}")
+        print(
+            "\nПриложение работает на пороговом правиле: по собственным "
+            "разметкам пользователя\nоно ловит 53.9% эпизодов. Модель ловит "
+            "86.7% при той же частоте ложных\nсрабатываний. Обучить: "
+            "python -m hairlab train"
+        )
+        return
+
+    info = model.info
+    min_frames = min(int(config.get("detection", "model", "min_frames") or info.seq_len),
+                     info.seq_len)
+    delay = float(config.get("detection", "model", "trigger_delay_sec") or 0.0)
+    print(f"Признаков:  {info.feature_dim}")
+    print(f"Окно:       {info.seq_len} кадров (~{info.seq_len / 6.75:.1f} с при 6.75 fps)")
+    print(f"Порог:      {model.threshold:.4f} (из model.json)")
+    print(f"Обучена:    {info.trained_at}")
+    model.close()
+
+    # The reaction time, spelled out. It is the number this app lives or dies
+    # by, and it is not readable from the threshold or the window alone.
+    print(
+        f"\nСпрашиваем с {min_frames}-го кадра у головы "
+        f"(~{(min_frames - 1) / 6.75:.2f} с), затем {delay:.2f} с подтверждения:"
+    )
+    print(f"  реакция ~{(min_frames - 1) / 6.75 + delay:.2f} с")
+    print(
+        "  по размеченным дням, не участвовавшим в обучении: 80.7% эпизодов, "
+        "медиана 0.72 с,\n  ложные на 'просто держу' 6.9% — против 37.7%, "
+        "1.20 с и 10.3% у правила.\n  Кривая: python -m hairlab truncation"
+    )
+
+
 def cmd_status(_args: argparse.Namespace) -> None:
     import os
     from hairguard.pid import PidFile
@@ -348,6 +404,10 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     p_status = sub.add_parser("status", help="Show running status")
     p_status.set_defaults(func=cmd_status)
+
+    # model
+    p_model = sub.add_parser("model", help="Show which detector is in use")
+    p_model.set_defaults(func=cmd_model)
 
     # collect
     p_collect = sub.add_parser("collect", help="Start/stop dataset collection")

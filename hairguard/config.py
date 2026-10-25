@@ -30,6 +30,37 @@ DEFAULTS: dict[str, Any] = {
         "persist_frames": 5,
         "min_presence_score": 0.7,
         "hair_zone_offset": 0.4,
+        # The trained detector. Replaces the thresholds above as the verdict
+        # when the artefacts in ~/.hairguard/trained are present and match
+        # the current feature extractor; the app falls back to the rule and
+        # says so otherwise.
+        "model": {
+            # Set false to pin the app to the old rule without deleting
+            # anything — the instant way back if the model misbehaves.
+            "enabled": True,
+            # "auto" takes the operating point chosen during training, which
+            # is the lowest threshold holding the false-alarm rate on "hand
+            # resting on head" under 5%. A number here overrides it; higher
+            # is quieter and misses more, at roughly ten points of recall per
+            # five points of false-alarm rate.
+            "threshold": "auto",
+            # Sustained model detection before the overlay appears. Much
+            # shorter than detection.trigger_delay_sec: each verdict already
+            # integrates a run of frames, so this only has to reject a lone
+            # window rather than establish persistence from scratch. See the
+            # analyzer docstring.
+            "trigger_delay_sec": 0.3,
+            # In-zone frames before the model is asked at all. The window is
+            # 20 frames, which is ~2.8 s at the 6.75 fps this loop achieves,
+            # and waiting that long to react defeats the point of the app.
+            # `hairlab.truncation` measured the cost of asking earlier,
+            # cross-validated by capture day: at 3 frames recall is 78.0% and
+            # the false-alarm rate on a resting hand 3.2%, against 86.7% and
+            # 3.6% at the full 20 — still far ahead of the 53.9% rule on both
+            # axes, for a ninth of the wait. Raise it towards 20 to trade
+            # reaction time back for recall.
+            "min_frames": 3,
+        },
     },
     "alert": {
         "opacity": 0.7,
@@ -45,6 +76,7 @@ DEFAULTS: dict[str, Any] = {
 # Fields that also accept a fixed set of keyword values besides their type.
 _LITERALS: dict[tuple[str, ...], tuple[str, ...]] = {
     ("camera",): ("auto",),
+    ("detection", "model", "threshold"): ("auto",),
 }
 
 _FIELD_RULES: list[tuple[tuple[str, ...], type, tuple | None]] = [
@@ -61,6 +93,13 @@ _FIELD_RULES: list[tuple[tuple[str, ...], type, tuple | None]] = [
     (("detection", "persist_frames"), (int, float), (1, 30)),
     (("detection", "min_presence_score"), float, (0.0, 1.0)),
     (("detection", "hair_zone_offset"), float, (0.0, 2.0)),
+    (("detection", "model", "enabled"), bool, None),
+    (("detection", "model", "threshold"), (int, float), (0.0, 1.0)),
+    (("detection", "model", "trigger_delay_sec"), (int, float), (0.0, None)),
+    # Upper bound is generous rather than the window length: the window comes
+    # from the model file, not from here, and a value above it simply means
+    # "wait for a full window".
+    (("detection", "model", "min_frames"), int, (1, 120)),
     (("alert", "opacity"), float, (0.0, 1.0)),
     (("alert", "text_color"), str, None),
     (("alert", "sound"), bool, None),

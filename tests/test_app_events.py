@@ -271,3 +271,44 @@ def test_exit_event_asks_for_shutdown(app: HairGuardApp) -> None:
 def test_other_events_keep_the_app_running(app: HairGuardApp) -> None:
     assert app._handle_tray_event("pause") is True
     assert app._handle_tray_event("something-else") is True
+
+
+# ---------------------------------------------------------------------------
+# Which detector is running must be readable from the tray
+# ---------------------------------------------------------------------------
+
+class FakeAnalyzer:
+    def __init__(self, detector_name: str = "model") -> None:
+        self.detector_name = detector_name
+
+
+class FakeTwistModel:
+    threshold = 0.966
+
+
+def test_the_tray_reports_the_model_when_the_model_is_deciding(app: HairGuardApp) -> None:
+    app._analyzer = FakeAnalyzer("model")
+    app._twist_model = FakeTwistModel()
+    status = app._get_detector_status()
+    assert "модель" in status
+    assert "0.97" in status
+
+
+def test_the_tray_reports_the_rule_when_there_is_no_model(app: HairGuardApp) -> None:
+    app._analyzer = FakeAnalyzer("rule")
+    app._twist_model = None
+    assert app._get_detector_status() == "Детектор: правило"
+
+
+def test_a_model_that_demoted_itself_is_not_still_advertised(app: HairGuardApp) -> None:
+    """Read from the analyzer, not from what loaded at startup."""
+    app._analyzer = FakeAnalyzer("rule")
+    app._twist_model = FakeTwistModel()
+    status = app._get_detector_status()
+    assert "правило" in status
+    assert "отключилась" in status
+
+
+def test_the_status_survives_a_half_built_app(app: HairGuardApp) -> None:
+    """The tray thread may ask before or after the pieces exist."""
+    assert "неизвестно" in app._get_detector_status()

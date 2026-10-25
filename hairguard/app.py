@@ -35,6 +35,14 @@ class HairGuardApp:
         background: bool = False,
         collect: Optional[bool] = None,
     ) -> None:
+        # Before anything else that needs hairlab — the trained model's
+        # feature extractor and the dataset collector both live there, and
+        # whether it is importable must not come down to the working
+        # directory the app was launched from.
+        from hairguard.labpath import ensure_hairlab_importable
+
+        ensure_hairlab_importable()
+
         from hairguard.config import Config
         from hairguard.pid import PidFile
         from hairguard.db import Database
@@ -96,7 +104,18 @@ class HairGuardApp:
             self._hand_detector = HandDetector(max_hands=2, min_confidence=min_conf)
             self._face_detector = FaceDetector(min_confidence=min_conf)
             self._warm_up_detectors()
-        self._analyzer = GestureAnalyzer(self._config)
+
+        # --- Which detector decides ---
+        # The trained model if it loads and matches the current feature
+        # extractor, the old geometric rule otherwise. Announced either way:
+        # the two differ by some thirty points of recall, and nothing on
+        # screen distinguishes them, so a silent fallback would look like the
+        # model simply being bad.
+        from hairguard.twistnet import load_configured
+
+        self._twist_model, self._detector_status = load_configured(self._config)
+        print(f"[app] Детектор: {self._detector_status}")
+        self._analyzer = GestureAnalyzer(self._config, twist_model=self._twist_model)
 
         # Derive tick interval from configured FPS
         fps = float(self._config.get("detection", "fps") or 10)
@@ -148,6 +167,7 @@ class HairGuardApp:
             config=self._config,
             on_toggle_collect=self._on_toggle_collect if self._capture else None,
             collect_status_getter=self._get_collect_status if self._capture else None,
+            detector_status_getter=self._get_detector_status,
         )
 
         # --- Frame queue (maxsize=2 — drop old frames if detection is slow) ---
@@ -285,6 +305,11 @@ class HairGuardApp:
             pass
         try:
             self._face_detector.close()
+        except Exception:
+            pass
+        try:
+            if self._twist_model is not None:
+                self._twist_model.close()
         except Exception:
             pass
 
@@ -646,6 +671,24 @@ class HairGuardApp:
         if self._capture is None:
             return False, 0
         return self._capture.enabled, self._capture.saved_count
+
+    def _get_detector_status(self) -> str:
+        """Which detector is deciding, for the tray menu.
+
+        Read from the analyzer rather than from what was loaded at startup:
+        the model can demote itself to the rule after repeated scoring
+        failures or after missing its time budget, and the menu has to show
+        what is true now. Shorter than the startup line because this one has
+        to fit in a menu — the console keeps the full description.
+        """
+        try:
+            if self._analyzer.detector_name == "model":
+                return f"Детектор: модель (порог {self._twist_model.threshold:.2f})"
+            if self._twist_model is not None:
+                return "Детектор: правило (модель отключилась — см. консоль)"
+            return "Детектор: правило"
+        except Exception:
+            return "Детектор: неизвестно"
 
     def _toggle_collection(self) -> None:
         """Flip collection, from the tray. Must run on the main thread."""

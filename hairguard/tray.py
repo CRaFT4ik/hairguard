@@ -56,6 +56,11 @@ class TrayApp:
         When omitted the collection entry is left out of the menu.
     collect_status_getter:
         Returns ``(enabled, clips_saved)`` for the collection menu entry.
+    detector_status_getter:
+        Returns a one-line description of the detector currently deciding.
+        Shown as a disabled menu entry, so which of the two detectors is
+        running is something the user can read rather than infer. Omitted
+        from the menu when not supplied.
     """
 
     def __init__(
@@ -67,6 +72,7 @@ class TrayApp:
         config: Optional[object] = None,  # hairguard.config.Config
         on_toggle_collect: Optional[Callable[[], None]] = None,
         collect_status_getter: Optional[Callable[[], tuple[bool, int]]] = None,
+        detector_status_getter: Optional[Callable[[], str]] = None,
     ) -> None:
         self._on_pause = on_pause
         self._on_resume = on_resume
@@ -75,6 +81,7 @@ class TrayApp:
         self._config = config
         self._on_toggle_collect = on_toggle_collect
         self._collect_status_getter = collect_status_getter
+        self._detector_status_getter = detector_status_getter
 
         self._paused = False
         self._pause_timer: Optional[threading.Timer] = None
@@ -172,6 +179,15 @@ class TrayApp:
             return f"⏺ Сбор данных: ВКЛ ({saved} клипов) — остановить"
         return f"Сбор данных: выкл ({saved} за сеанс) — начать"
 
+    def _detector_label(self, item: object = None) -> str:  # noqa: ARG002
+        """Live text for the detector entry — pystray re-reads it on open."""
+        if self._detector_status_getter is None:
+            return "Детектор: неизвестно"
+        try:
+            return self._detector_status_getter()
+        except Exception:
+            return "Детектор: неизвестно"
+
     def _rebuild_menu(self) -> None:
         """Rebuild and reapply the pystray menu."""
         if self._icon is None:
@@ -203,6 +219,15 @@ class TrayApp:
             toggle_item,
             pystray.MenuItem("Статистика", self._handle_stats),
         ]
+
+        if self._detector_status_getter is not None:
+            # Not clickable: there is nothing to do here, only something to
+            # know. Switching detectors is a config change and a restart,
+            # deliberately — it is not a thing to fumble from a menu while
+            # an alert is up.
+            items.append(
+                pystray.MenuItem(self._detector_label, None, enabled=False)
+            )
 
         if self._on_toggle_collect is not None:
             items += [

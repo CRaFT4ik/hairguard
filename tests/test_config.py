@@ -75,3 +75,76 @@ def test_detectors_see_the_full_capture_width_by_default() -> None:
 def test_process_width_is_validated() -> None:
     validated = _validated({"detection": {"process_width": 10}})
     assert validated["detection"]["process_width"] == DEFAULTS["detection"]["process_width"]
+
+
+# ---------------------------------------------------------------------------
+# The trained detector
+# ---------------------------------------------------------------------------
+
+def test_the_model_is_used_by_default() -> None:
+    """It catches roughly three times as many episodes as the rule does."""
+    assert DEFAULTS["detection"]["model"]["enabled"] is True
+
+
+def test_the_model_can_be_switched_off_without_deleting_it() -> None:
+    """The instant way back, needed because the model is new."""
+    validated = _validated({"detection": {"model": {"enabled": False}}})
+    assert validated["detection"]["model"]["enabled"] is False
+
+
+def test_a_non_boolean_enabled_falls_back_to_on() -> None:
+    validated = _validated({"detection": {"model": {"enabled": "sure"}}})
+    assert validated["detection"]["model"]["enabled"] is True
+
+
+def test_the_threshold_defaults_to_the_one_training_chose() -> None:
+    """Training picked it against a measured false-alarm ceiling; config should not guess."""
+    assert DEFAULTS["detection"]["model"]["threshold"] == "auto"
+
+
+def test_an_explicit_threshold_is_accepted() -> None:
+    validated = _validated({"detection": {"model": {"threshold": 0.8}}})
+    assert validated["detection"]["model"]["threshold"] == 0.8
+
+
+def test_a_threshold_outside_the_probability_range_falls_back_to_auto() -> None:
+    validated = _validated({"detection": {"model": {"threshold": 1.4}}})
+    assert validated["detection"]["model"]["threshold"] == "auto"
+
+
+def test_a_nonsense_threshold_falls_back_to_auto() -> None:
+    validated = _validated({"detection": {"model": {"threshold": "low"}}})
+    assert validated["detection"]["model"]["threshold"] == "auto"
+
+
+def test_the_model_trigger_delay_is_shorter_than_the_rules() -> None:
+    """Each model verdict already covers a 2 s window; stacking 0.8 s on top
+    would put the alert nearly four seconds after the hand arrived."""
+    detection = DEFAULTS["detection"]
+    assert detection["model"]["trigger_delay_sec"] < detection["trigger_delay_sec"]
+
+
+def test_a_negative_model_trigger_delay_falls_back() -> None:
+    validated = _validated({"detection": {"model": {"trigger_delay_sec": -1}}})
+    assert validated["detection"]["model"]["trigger_delay_sec"] == 0.3
+
+
+def test_the_model_is_asked_well_before_the_window_fills() -> None:
+    """A full 20-frame window is ~2.8 s at the 6.75 fps this loop achieves,
+    and the app exists to interrupt a behaviour before it completes."""
+    assert DEFAULTS["detection"]["model"]["min_frames"] == 3
+
+
+def test_min_frames_can_be_raised_to_trade_speed_for_recall() -> None:
+    validated = _validated({"detection": {"model": {"min_frames": 20}}})
+    assert validated["detection"]["model"]["min_frames"] == 20
+
+
+def test_a_zero_min_frames_falls_back() -> None:
+    validated = _validated({"detection": {"model": {"min_frames": 0}}})
+    assert validated["detection"]["model"]["min_frames"] == 3
+
+
+def test_a_nonsense_min_frames_falls_back() -> None:
+    validated = _validated({"detection": {"model": {"min_frames": "soon"}}})
+    assert validated["detection"]["model"]["min_frames"] == 3

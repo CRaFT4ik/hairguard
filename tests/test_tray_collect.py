@@ -100,3 +100,45 @@ def test_a_broken_status_getter_does_not_break_the_menu() -> None:
 
     tray = _tray(on_toggle_collect=lambda: None, collect_status_getter=boom)
     assert any("Сбор данных" in t for t in _entry_texts(tray))
+
+
+# ---------------------------------------------------------------------------
+# The detector entry: which of the two is running must be readable
+# ---------------------------------------------------------------------------
+
+def test_the_detector_entry_is_absent_without_a_getter() -> None:
+    assert not any("Детектор" in t for t in _entry_texts(_tray()))
+
+
+def test_the_detector_entry_shows_what_is_running() -> None:
+    """A silent fallback to the rule would look like the model being bad."""
+    tray = _tray(detector_status_getter=lambda: "Детектор: модель twistnet")
+    assert any("модель twistnet" in t for t in _entry_texts(tray))
+
+
+def test_the_detector_entry_is_read_fresh_each_time_the_menu_opens() -> None:
+    """The model can demote itself mid-session; a cached label would lie."""
+    state = ["Детектор: модель twistnet"]
+    tray = _tray(detector_status_getter=lambda: state[0])
+    assert any("модель" in t for t in _entry_texts(tray))
+    state[0] = "Детектор: правило"
+    assert any("правило" in t for t in _entry_texts(tray))
+
+
+def test_the_detector_entry_is_not_clickable() -> None:
+    """Switching detectors is a config change and a restart, on purpose."""
+    tray = _tray(detector_status_getter=lambda: "Детектор: правило")
+    menu = tray._build_menu(FakePystray)
+    entry = next(
+        item for item in menu.items
+        if isinstance(item, FakeMenuItem) and "Детектор" in item.resolved_text()
+    )
+    assert entry.action is None
+
+
+def test_a_broken_detector_getter_does_not_break_the_menu() -> None:
+    def boom() -> str:
+        raise RuntimeError("nope")
+
+    tray = _tray(detector_status_getter=boom)
+    assert any("Детектор" in t for t in _entry_texts(tray))

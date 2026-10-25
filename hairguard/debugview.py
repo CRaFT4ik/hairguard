@@ -311,6 +311,7 @@ def draw_status_panel(
     result: AnalysisResult,
     fps: float,
     combined_threshold: float,
+    model_threshold: Optional[float] = None,
 ) -> None:
     """Render the status panel at the top of the frame."""
     h, w = img.shape[:2]
@@ -397,6 +398,24 @@ def draw_status_panel(
     cv2.putText(img, rot_txt, (col2 + 72, y), _FONT, _FONT_MD, rot_color, 1, cv2.LINE_AA)
     y += lh
 
+    # Model score. Shown next to the rule's numbers rather than instead of
+    # them: this panel is where the two detectors can be caught disagreeing.
+    # "---" means the window is not full yet, which is itself worth seeing —
+    # it is how long the model stays blind after a hand reaches the head.
+    if result.detector == "model":
+        if result.model_score is None:
+            model_txt, model_color = "---", COLOR_GRAY
+        else:
+            fires = model_threshold is not None and result.model_score >= model_threshold
+            model_txt = f"{result.model_score:.3f}"
+            model_color = COLOR_RED if fires else COLOR_GREEN
+        label = "Model:" if model_threshold is None else f"Model(>{model_threshold:.2f}):"
+    else:
+        model_txt, model_color, label = "rule", COLOR_GRAY, "Detector:"
+    cv2.putText(img, label, (col2, y), _FONT, _FONT_MD, COLOR_GRAY, 1, cv2.LINE_AA)
+    cv2.putText(img, model_txt, (col2 + 125, y), _FONT, _FONT_MD, model_color, 1, cv2.LINE_AA)
+    y += lh
+
     # Key hints
     hint = "Q/ESC: quit   C: cycle camera"
     (tw, _), _ = cv2.getTextSize(hint, _FONT, _FONT_SM, 1)
@@ -420,7 +439,14 @@ def main(camera: Optional[int] = None) -> None:
     pose_det = PoseDetector(min_confidence=min_confidence)
     hand_det = HandDetector(max_hands=2, min_confidence=min_confidence)
     face_det = FaceDetector(min_confidence=min_confidence)
-    analyzer = GestureAnalyzer(config)
+
+    # Same decision the app makes, so what is watched here is what runs.
+    from hairguard.twistnet import load_configured
+
+    twist_model, detector_status = load_configured(config)
+    print(f"[debugview] Детектор: {detector_status}")
+    analyzer = GestureAnalyzer(config, twist_model=twist_model)
+    model_threshold = twist_model.threshold if twist_model is not None else None
 
     available_cameras = CameraManager.list_cameras()
     camera_indices = [c["index"] for c in available_cameras] or [0]
@@ -508,7 +534,8 @@ def main(camera: Optional[int] = None) -> None:
             draw_pose_landmarks(display, pose)
             draw_hand_skeletons(display, hands, result, combined_threshold)
             draw_pinch_indicator(display, hands, combined_threshold)
-            draw_status_panel(display, result, fps_value, combined_threshold)
+            draw_status_panel(display, result, fps_value, combined_threshold,
+                              model_threshold=model_threshold)
 
             cv2.imshow("HairGuard Debug View", display)
 

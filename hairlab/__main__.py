@@ -86,7 +86,25 @@ def cmd_stats(_args: argparse.Namespace) -> None:
                 print("  это даёт больше деталей, чем любая настройка в коде.")
 
 
+# Subcommands that own their own argument parser. Delegated to before this
+# module's parser runs, so each keeps its own flags and help text instead of
+# having them restated — and drift between the two restatements is exactly
+# why `hairlab train`, documented in hairlab/train.py since it was written,
+# did not actually work.
+_DELEGATED = {
+    "train": "hairlab.train",
+    "truncation": "hairlab.truncation",
+}
+
+
 def main(argv: list[str] | None = None) -> None:
+    args_in = list(sys.argv[1:] if argv is None else argv)
+    if args_in and args_in[0] in _DELEGATED:
+        import importlib
+
+        module = importlib.import_module(_DELEGATED[args_in[0]])
+        return module.main(args_in[1:])
+
     parser = argparse.ArgumentParser(prog="hairlab", description="Сбор и разметка данных для HairGuard")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -99,7 +117,14 @@ def main(argv: list[str] | None = None) -> None:
     p_stats = sub.add_parser("stats", help="Показать прогресс разметки")
     p_stats.set_defaults(func=cmd_stats)
 
-    args = parser.parse_args(argv)
+    # Listed so `hairlab --help` mentions them; the real parsing happens in
+    # the delegation above.
+    sub.add_parser("train", help="Обучить детектор накручивания (своя справка)",
+                   add_help=False)
+    sub.add_parser("truncation", help="Насколько рано можно спрашивать модель",
+                   add_help=False)
+
+    args = parser.parse_args(args_in)
     args.func(args)
 
 

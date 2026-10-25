@@ -71,6 +71,9 @@ hairguard start --background     # Start as background process
 hairguard stop                   # Stop running instance
 hairguard status                 # Show if running, PID, uptime
 hairguard cameras                # List available cameras
+hairguard collect on             # Start dataset collection (see hairlab/)
+hairguard collect off            # Stop it
+hairguard collect status         # Is it recording, and how many clips so far
 hairguard stats                  # Today's stats vs. yesterday
 hairguard stats --last 7d        # Last 7 days
 hairguard stats --from 2026-04-01 --to 2026-04-15
@@ -89,12 +92,16 @@ hairguard debug                  # Launch debug view
 Config file is created at `~/.hairguard/config.yaml` on first run.
 
 ```yaml
-camera: 0                        # Camera index (see: hairguard cameras)
+camera: auto                     # Camera index, or "auto" to detect one
+                                 #   (see: hairguard cameras)
+camera_width: 1280               # Capture resolution. Detail on the hand is
+camera_height: 720               #   what limits dataset quality
 
 detection:
   trigger_delay_sec: 0.8         # Seconds hand must be in hair zone before alert fires
   dismiss_delay_sec: 2.5         # Seconds alert stays after hand leaves
   fps: 10                        # Frames per second processed
+  process_width: 1280            # Width the detectors see; lower it to save CPU
   min_confidence: 0.5            # Minimum landmark confidence to trust a detection
   pinch_threshold: 0.4           # Thumb-index distance / hand scale — below = pinching
   min_presence_score: 0.7        # Minimum presence score to trust fingertip position
@@ -104,12 +111,26 @@ detection:
 alert:
   opacity: 0.7                   # Overlay opacity (0.0–1.0)
   text_color: "#ffffff"          # Alert text color
+  sound: true                    # Repeating chirp while your hand is at your
+                                 #   head; stops the moment you move it away
 
 pause:
   auto_resume_minutes: 15        # Tray pause auto-resumes after this many minutes
 ```
 
 Invalid values are reported at startup; the affected field falls back to its default.
+
+### Camera selection
+
+With `camera: auto`, HairGuard probes each index at startup and picks the first one
+showing a live image. Opening a camera successfully is not enough — a device can
+return all-black frames, and a virtual camera can serve a single frozen placeholder.
+Both look like a working camera to `read()`, so the probe samples several consecutive
+frames and keeps only a source that both carries content and changes between frames,
+as any real sensor does through its noise. The probe adds a few seconds to startup.
+
+Setting an explicit index skips probing entirely and is always honoured, even if that
+camera turns out to be blind.
 
 ---
 

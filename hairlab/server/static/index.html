@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HairLab — разметка</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="rail" role="progressbar" aria-label="Размечено клипов" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+  <div class="rail__fill" id="railFill"></div>
+</div>
+
+<main class="bay" id="bay">
+
+  <header class="tally">
+    <span class="tally__done"><b id="tallyDone">0</b> размечено</span>
+    <span class="tally__sep" aria-hidden="true"></span>
+    <span class="tally__left"><b id="tallyLeft">0</b> осталось</span>
+  </header>
+
+  <section class="stage" id="stage" aria-live="polite">
+    <canvas class="stage__canvas" id="canvas" width="224" height="224" aria-label="Клип"></canvas>
+    <div class="stage__wash" id="wash" aria-hidden="true"></div>
+
+    <div class="state" id="state" hidden>
+      <p class="state__line" id="stateLine"></p>
+      <p class="state__hint" id="stateHint"></p>
+    </div>
+  </section>
+
+  <div class="film" id="film">
+    <div class="film__ticks" id="ticks"></div>
+    <span class="film__count" id="frameCount">—</span>
+  </div>
+
+  <section class="verdicts" id="verdicts" aria-label="Что происходит на клипе"></section>
+
+  <footer class="base">
+    <span class="base__id" id="clipId">—</span>
+    <span class="base__keys">
+      <kbd>пробел</kbd> пауза
+      <kbd>←</kbd><kbd>→</kbd> по кадрам
+      <button class="undo" id="undoBtn" type="button" disabled><kbd>⌫</kbd> отменить</button>
+    </span>
+  </footer>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

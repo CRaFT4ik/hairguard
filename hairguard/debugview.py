@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from hairguard.analyzer import GestureAnalyzer, AnalysisResult
-from hairguard.camera import CameraManager
+from hairguard.camera import CameraManager, resolve_camera_index
 from hairguard.config import Config
 from hairguard.detector import PoseDetector, PoseResult, Landmark
 from hairguard.face_detector import FaceDetector, FaceResult
@@ -414,7 +414,7 @@ def main(camera: Optional[int] = None) -> None:
     min_confidence: float  = config.get("detection", "min_confidence")
     hair_zone_offset: float = config.get("detection", "hair_zone_offset")
 
-    default_camera = camera if camera is not None else (config.get("camera") or 0)
+    default_camera = camera if camera is not None else resolve_camera_index(config.get("camera"))
 
     print("[debugview] Initializing detectors...")
     pose_det = PoseDetector(min_confidence=min_confidence)

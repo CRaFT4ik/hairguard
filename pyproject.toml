@@ -18,10 +18,21 @@ dependencies = [
 
 [project.optional-dependencies]
 wayland = ["PyGObject"]
+# Dataset collection and the labelling UI (hairlab). The app itself runs
+# without these; only `hairlab label` needs a web server.
+lab = ["fastapi", "uvicorn"]
+# Training the detector. onnx and onnxscript are needed by the exporter
+# itself, not just to run the result — torch.onnx.export fails without them.
+train = ["torch", "pytorch-lightning", "torchmetrics", "scikit-learn",
+         "onnx", "onnxscript", "onnxruntime"]
 
 [project.scripts]
 hairguard = "hairguard.cli:main"
+hairlab = "hairlab.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["hairguard*"]
+include = ["hairguard*", "hairlab*"]
+
+[tool.setuptools.package-data]
+"hairlab.server" = ["static/*"]

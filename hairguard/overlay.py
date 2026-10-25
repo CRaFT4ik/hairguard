@@ -179,21 +179,37 @@ class TkOverlay:
         self._window.deiconify()
         self._window.lift()
         self._visible = True
-        if sys.platform == "win32":
-            # Re-apply topmost without stealing focus
-            try:
-                import ctypes
-                HWND_TOPMOST = -1
-                SWP_NOMOVE = 0x0002
-                SWP_NOSIZE = 0x0001
-                SWP_NOACTIVATE = 0x0010
-                hwnd = self._window.winfo_id()
-                ctypes.windll.user32.SetWindowPos(
-                    hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        self._raise_topmost()
+
+    def ensure_on_top(self) -> None:
+        """Re-assert topmost while the alert is up.
+
+        Topmost is not a promise the window system keeps: anything that
+        raises itself afterwards — a notification, an installer, another
+        fullscreen app — leaves the alert behind it, which to the user is
+        indistinguishable from the alert not working at all. Claiming it
+        once at show() was not enough.
+        """
+        if self._visible:
+            self._raise_topmost()
+
+    def _raise_topmost(self) -> None:
+        if sys.platform != "win32":
+            return
+        # Re-apply topmost without stealing focus
+        try:
+            import ctypes
+            HWND_TOPMOST = -1
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            hwnd = self._window.winfo_id()
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def hide(self) -> None:
         """Hide the overlay."""
@@ -273,6 +289,9 @@ def _build_gtk_overlay(config: "Config") -> "GtkOverlay | None":
 
         def is_visible(self) -> bool:
             return self._visible
+
+        def ensure_on_top(self) -> None:
+            """Layer-shell keeps this window on top for us."""
 
     return GtkOverlay(config)  # type: ignore[return-value]
 

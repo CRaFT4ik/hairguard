@@ -47,6 +47,10 @@ class AnalysisResult:
     combined_score: Optional[float] = None
     fingertips_in_zone: bool = False
     consecutive_frames: int = 0
+    # Index into the hand_results list of the hand found inside the hair zone.
+    # Dataset clips are cropped around it, so "a hand is in the zone" alone is
+    # not enough information for the collector.
+    in_zone_hand_index: Optional[int] = None
 
 
 class GestureAnalyzer:
@@ -152,6 +156,7 @@ class GestureAnalyzer:
             combined_score=detection.get("combined_score"),
             fingertips_in_zone=detection.get("in_zone", False),
             consecutive_frames=self._consecutive_positive,
+            in_zone_hand_index=detection.get("hand_index"),
         )
 
     def _transition(self, new_state: _State, now: float) -> None:
@@ -185,6 +190,7 @@ class GestureAnalyzer:
             "spread": None,
             "rotation": None,
             "in_zone": False,
+            "hand_index": None,
         }
 
         # Layer 1: Hand present?
@@ -202,7 +208,7 @@ class GestureAnalyzer:
         zone = self._zone_smoother.smooth(zone)
 
         # Check each hand
-        for hand in hand_results:
+        for hand_index, hand in enumerate(hand_results):
             thumb = hand.thumb_tip()
             index = hand.index_tip()
 
@@ -216,6 +222,7 @@ class GestureAnalyzer:
             if not (zone.contains(thumb.x, thumb.y) or zone.contains(index.x, index.y)):
                 continue
             result["in_zone"] = True
+            result["hand_index"] = hand_index
 
             # --- Compute features ---
 

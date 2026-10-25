@@ -46,7 +46,10 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     from hairguard.app import HairGuardApp
 
-    app = HairGuardApp(camera_index=args.camera, background=False)
+    # --collect / --no-collect set the shared switch before the app reads it;
+    # without either flag the previous state carries over.
+    collect = True if args.collect else (False if args.no_collect else None)
+    app = HairGuardApp(camera_index=args.camera, background=False, collect=collect)
     app.run()
 
 
@@ -57,6 +60,10 @@ def _start_background(args: argparse.Namespace) -> None:
     cmd = [sys.executable, "-m", "hairguard", "start"]
     if args.camera is not None:
         cmd += ["--camera", str(args.camera)]
+    if getattr(args, "collect", False):
+        cmd += ["--collect"]
+    if getattr(args, "no_collect", False):
+        cmd += ["--no-collect"]
 
     if sys.platform == "win32":
         CREATE_NO_WINDOW = 0x08000000
@@ -131,6 +138,47 @@ def cmd_stop(_args: argparse.Namespace) -> None:
         if pid_file.read() == pid:
             pid_file.release()
         print("HairGuard остановлен.")
+
+
+def cmd_collect(args: argparse.Namespace) -> None:
+    """Start, stop or inspect dataset collection in the running app.
+
+    The tray menu does the same thing, but a menu entry cannot be scripted
+    and gives no way to check afterwards whether collection ever started.
+    Both routes set the same file; the app adopts it within a second.
+    """
+    from hairguard.pid import PidFile
+
+    try:
+        from hairlab.clipstore import ClipStore, LabelStore
+        from hairlab.state import CollectionState
+    except ImportError:
+        print("Сбор данных недоступен: пакет hairlab не найден.")
+        return
+
+    state = CollectionState()
+    running = PidFile().is_running()
+
+    if args.state == "status":
+        print(f"Сбор данных: {'ВКЛЮЧЁН' if state.read() else 'выключен'}")
+        print(f"HairGuard:   {'запущен' if running else 'не запущен'}")
+        store = ClipStore()
+        clips = store.clip_ids()
+        labelled = len(LabelStore().labelled_ids())
+        print(f"Клипов:      {len(clips)} (размечено {labelled})")
+        print(f"Каталог:     {store.root}")
+        if state.read() and not running:
+            print("\nПереключатель включён, но приложение не работает — ничего не пишется.")
+        return
+
+    enabled = args.state == "on"
+    state.write(enabled)
+    print(f"Сбор данных {'включён' if enabled else 'выключен'}.")
+
+    if not running:
+        print("HairGuard не запущен — запустите 'hairguard start', запись начнётся сразу.")
+    else:
+        print("Приложение подхватит это в течение секунды.")
 
 
 def cmd_status(_args: argparse.Namespace) -> None:
@@ -287,6 +335,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_start = sub.add_parser("start", help="Start detection")
     p_start.add_argument("--camera", type=int, default=None, metavar="INDEX")
     p_start.add_argument("--background", action="store_true")
+    p_start.add_argument("--collect", action="store_true",
+                         help="Record dataset clips from the start")
+    p_start.add_argument("--no-collect", action="store_true",
+                         help="Start without recording clips")
     p_start.set_defaults(func=cmd_start)
 
     # stop
@@ -296,6 +348,11 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     p_status = sub.add_parser("status", help="Show running status")
     p_status.set_defaults(func=cmd_status)
+
+    # collect
+    p_collect = sub.add_parser("collect", help="Start/stop dataset collection")
+    p_collect.add_argument("state", choices=["on", "off", "status"])
+    p_collect.set_defaults(func=cmd_collect)
 
     # cameras
     p_cameras = sub.add_parser("cameras", help="List available cameras")

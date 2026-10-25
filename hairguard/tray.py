@@ -51,6 +51,11 @@ class TrayApp:
         tooltip and the stats notification.
     config:
         Optional Config instance.  Used to read ``pause.auto_resume_minutes``.
+    on_toggle_collect:
+        Called (from tray thread) when the user toggles dataset collection.
+        When omitted the collection entry is left out of the menu.
+    collect_status_getter:
+        Returns ``(enabled, clips_saved)`` for the collection menu entry.
     """
 
     def __init__(
@@ -60,12 +65,16 @@ class TrayApp:
         on_exit: Callable[[], None],
         stats_getter: Callable[[], str],
         config: Optional[object] = None,  # hairguard.config.Config
+        on_toggle_collect: Optional[Callable[[], None]] = None,
+        collect_status_getter: Optional[Callable[[], tuple[bool, int]]] = None,
     ) -> None:
         self._on_pause = on_pause
         self._on_resume = on_resume
         self._on_exit = on_exit
         self._stats_getter = stats_getter
         self._config = config
+        self._on_toggle_collect = on_toggle_collect
+        self._collect_status_getter = collect_status_getter
 
         self._paused = False
         self._pause_timer: Optional[threading.Timer] = None
@@ -114,6 +123,10 @@ class TrayApp:
         self._paused = is_paused
         self._rebuild_menu()
 
+    def refresh_menu(self) -> None:
+        """Re-read the menu labels. Called after state changes elsewhere."""
+        self._rebuild_menu()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -143,6 +156,22 @@ class TrayApp:
             return f"На паузе ({mins} мин осталось)"
         return "На паузе"
 
+    def _collect_label(self, item: object = None) -> str:  # noqa: ARG002
+        """Live text for the collection entry — pystray re-reads it on open.
+
+        pystray resolves callable menu text as ``text(item)``, so the menu
+        item is accepted and ignored.
+        """
+        if self._collect_status_getter is None:
+            return "Сбор данных: выкл"
+        try:
+            enabled, saved = self._collect_status_getter()
+        except Exception:
+            return "Сбор данных: выкл"
+        if enabled:
+            return f"⏺ Сбор данных: ВКЛ ({saved} клипов) — остановить"
+        return f"Сбор данных: выкл ({saved} за сеанс) — начать"
+
     def _rebuild_menu(self) -> None:
         """Rebuild and reapply the pystray menu."""
         if self._icon is None:
@@ -170,12 +199,22 @@ class TrayApp:
                 self._handle_pause,
             )
 
-        return pystray.Menu(
+        items = [
             toggle_item,
             pystray.MenuItem("Статистика", self._handle_stats),
+        ]
+
+        if self._on_toggle_collect is not None:
+            items += [
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(self._collect_label, self._handle_toggle_collect),
+            ]
+
+        items += [
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", self._handle_exit),
-        )
+        ]
+        return pystray.Menu(*items)
 
     # ------------------------------------------------------------------
     # Menu action handlers (called from tray thread)
@@ -211,6 +250,11 @@ class TrayApp:
         self._pause_timer = None
         self._rebuild_menu()
         self._on_resume()
+
+    def _handle_toggle_collect(self, icon: object, item: object) -> None:  # noqa: ARG002
+        if self._on_toggle_collect is not None:
+            self._on_toggle_collect()
+        self._rebuild_menu()
 
     def _handle_stats(self, icon: object, item: object) -> None:  # noqa: ARG002
         stats_text = self._stats_getter()

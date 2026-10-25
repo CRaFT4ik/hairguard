@@ -23,14 +23,24 @@ class HairGuardApp:
 
     # Update tray tooltip every N ticks (~6 seconds at 5 FPS)
     _TOOLTIP_EVERY_N_TICKS = 30
+    # Re-read the shared collection switch about once a second
+    _COLLECT_SYNC_EVERY_N_TICKS = 10
+    # Grace before the alert sound stops, so a dropped frame of hand
+    # tracking does not chop it into stutters
+    _SOUND_LINGER_SEC = 0.6
 
-    def __init__(self, camera_index: Optional[int] = None, background: bool = False) -> None:
+    def __init__(
+        self,
+        camera_index: Optional[int] = None,
+        background: bool = False,
+        collect: Optional[bool] = None,
+    ) -> None:
         from hairguard.config import Config
         from hairguard.pid import PidFile
         from hairguard.db import Database
         from hairguard.stats import StatsRecorder
         from hairguard.phrases import PhraseManager
-        from hairguard.camera import CameraManager
+        from hairguard.camera import CameraManager, resolve_camera_index
         from hairguard.detector import PoseDetector
         from hairguard.hand_detector import HandDetector
         from hairguard.face_detector import FaceDetector
@@ -41,9 +51,11 @@ class HairGuardApp:
         # --- Config ---
         self._config = Config()
 
-        # Resolve camera index: CLI arg > config file > default 0
+        # Resolve camera index: CLI arg > config file. A configured "auto"
+        # (or a missing setting) probes the attached cameras and picks the
+        # first one showing a live image.
         if camera_index is None:
-            camera_index = self._config.get("camera") or 0
+            camera_index = resolve_camera_index(self._config.get("camera"))
         self._camera_index = camera_index
 
         # --- Instance guard (actual acquire happens in run()) ---
@@ -57,18 +69,44 @@ class HairGuardApp:
         self._phrases = PhraseManager()
 
         # --- Camera ---
-        self._camera = CameraManager(camera_index=self._camera_index)
+        # Captured at the configured resolution; detection runs on a
+        # downscaled copy so the extra pixels cost nothing at runtime and
+        # only serve the dataset crops.
+        self._camera_size = (
+            int(self._config.get("camera_width") or 1280),
+            int(self._config.get("camera_height") or 720),
+        )
+        self._process_width = int(self._config.get("detection", "process_width") or 640)
+        self._camera = CameraManager(
+            camera_index=self._camera_index,
+            width=self._camera_size[0],
+            height=self._camera_size[1],
+        )
+        print(f"[app] Камера {self._camera_index}: {self._camera.resolution[0]}x{self._camera.resolution[1]}")
 
         # --- Detector + Analyzer ---
         min_conf: float = float(self._config.get("detection", "min_confidence") or 0.5)
-        self._detector = PoseDetector(min_confidence=min_conf)
-        self._hand_detector = HandDetector(max_hands=2, min_confidence=min_conf)
-        self._face_detector = FaceDetector(min_confidence=min_conf)
+        # Building the landmarkers and running the first inference is where
+        # MediaPipe prints its dozen startup notes. Silenced so that the
+        # messages the user can act on are not buried under them.
+        from hairguard.quiet import suppressed_native_stderr
+
+        with suppressed_native_stderr():
+            self._detector = PoseDetector(min_confidence=min_conf)
+            self._hand_detector = HandDetector(max_hands=2, min_confidence=min_conf)
+            self._face_detector = FaceDetector(min_confidence=min_conf)
+            self._warm_up_detectors()
         self._analyzer = GestureAnalyzer(self._config)
 
         # Derive tick interval from configured FPS
         fps = float(self._config.get("detection", "fps") or 10)
         self._TICK_MS = max(50, int(1000 / fps))
+
+        # --- Alert sound (plays on its own thread) ---
+        from hairguard.sound import AlertSound
+
+        self._sound = AlertSound(enabled=bool(self._config.get("alert", "sound")))
+        self._alert_gone_at: Optional[float] = None
 
         # --- Overlay (creates the tkinter root) ---
         self._overlay = create_overlay(self._config)
@@ -81,6 +119,26 @@ class HairGuardApp:
             self._root = tk.Tk()
             self._root.withdraw()
 
+        # --- Dataset collection ---
+        # The switch is shared with the command line through a file, so it can
+        # be set either way and inspected afterwards.
+        #
+        # It deliberately survives a restart. An earlier version reset it to
+        # off on every start, reasoning that a login-launched app must never
+        # resume recording by itself — but collecting a dataset takes weeks,
+        # and a switch that silently forgets is a switch that never records.
+        # Instead the state is announced loudly at startup, so recording is
+        # never a surprise.
+        self._capture = self._make_capture_service(fps)
+        self._collect_state = self._make_collect_state()
+        self._collect_hint_shown = False
+
+        if collect is not None and self._collect_state is not None:
+            try:
+                self._collect_state.write(bool(collect))
+            except Exception:
+                pass
+
         # --- Tray ---
         self._tray = TrayApp(
             on_pause=self._on_pause,
@@ -88,6 +146,8 @@ class HairGuardApp:
             on_exit=self._on_exit,
             stats_getter=self._get_stats_summary,
             config=self._config,
+            on_toggle_collect=self._on_toggle_collect if self._capture else None,
+            collect_status_getter=self._get_collect_status if self._capture else None,
         )
 
         # --- Frame queue (maxsize=2 — drop old frames if detection is slow) ---
@@ -112,6 +172,51 @@ class HairGuardApp:
                 # Not always possible (e.g. non-main thread), ignore
                 pass
 
+    @staticmethod
+    def _make_collect_state():
+        """The shared collection switch, or None if hairlab is unavailable."""
+        try:
+            from hairlab.state import CollectionState
+
+            return CollectionState()
+        except Exception:
+            return None
+
+    def _warm_up_detectors(self) -> None:
+        """Run one inference per model on a blank frame.
+
+        MediaPipe emits part of its startup logging on the first inference
+        rather than at construction, so this happens while stderr is still
+        silenced. It also pays the one-off graph setup cost before the first
+        real frame instead of during it.
+        """
+        import numpy as np
+
+        blank = np.zeros((self._camera_size[1], self._camera_size[0], 3), dtype=np.uint8)
+        try:
+            self._detector.process(blank, timestamp_ms=1)
+            self._hand_detector.detect(blank, timestamp_ms=1)
+            self._face_detector.detect(blank, timestamp_ms=1)
+        except Exception:
+            # A warm-up failure is not a reason to refuse to start.
+            pass
+
+    @staticmethod
+    def _make_capture_service(fps: float):
+        """Build the dataset collector, or None if hairlab is unavailable.
+
+        The app must keep running for users who only installed hairguard, so
+        a missing hairlab simply hides the collection entry from the tray.
+        """
+        try:
+            from hairlab.capture import CaptureService
+
+            # A two-second clip, whatever the configured frame rate.
+            return CaptureService(window_frames=max(4, int(round(2.0 * fps))), fps=fps)
+        except Exception as exc:
+            print(f"[app] Сбор данных недоступен: {exc}")
+            return None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -123,6 +228,7 @@ class HairGuardApp:
             sys.exit(1)
 
         self._running = True
+        self._announce_collection_state()
 
         # Start camera capture thread
         cam_thread = threading.Thread(
@@ -146,6 +252,21 @@ class HairGuardApp:
     def shutdown(self) -> None:
         """Clean up all resources. Safe to call multiple times."""
         self._running = False
+
+        # Silence the alert before anything else: a beep that outlives the
+        # app it belongs to has no way of being stopped.
+        try:
+            self._sound.stop()
+        except Exception:
+            pass
+
+        # Stop collecting, drop buffered frames, and let the writer finish
+        # whatever it already accepted rather than losing a clip on exit.
+        try:
+            if self._capture is not None:
+                self._capture.close()
+        except Exception:
+            pass
 
         # Release camera
         try:
@@ -271,7 +392,11 @@ class HairGuardApp:
                 return
 
             try:
-                self._camera = CameraManager(camera_index=self._camera_index)
+                self._camera = CameraManager(
+                    camera_index=self._camera_index,
+                    width=self._camera_size[0],
+                    height=self._camera_size[1],
+                )
                 consecutive_failures = 0
                 reopen_backoff = 1.0
             except Exception:
@@ -280,6 +405,34 @@ class HairGuardApp:
     # ------------------------------------------------------------------
     # Detection tick (main thread, scheduled via root.after)
     # ------------------------------------------------------------------
+
+    def _downscale_for_detection(self, frame):
+        """Shrink a frame to the configured processing width, keeping aspect."""
+        width = frame.shape[1]
+        if width <= self._process_width:
+            return frame
+        import cv2
+
+        scale = self._process_width / width
+        return cv2.resize(
+            frame,
+            (self._process_width, max(1, int(round(frame.shape[0] * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    def _handle_tray_event(self, event: str) -> bool:
+        """Apply one tray event on the main thread. False means shut down."""
+        if event == "pause":
+            self._paused = True
+            self._hide_overlay_if_visible()
+            self._silence_alert()
+        elif event == "resume":
+            self._paused = False
+        elif event == "collect_toggle":
+            self._toggle_collection()
+        elif event == "exit":
+            return False
+        return True
 
     def _tick(self) -> None:
         """Called every 200 ms on the main thread via root.after()."""
@@ -294,15 +447,18 @@ class HairGuardApp:
                 event = self._tray_events.get_nowait()
             except queue.Empty:
                 break
-            if event == "pause":
-                self._paused = True
-                self._hide_overlay_if_visible()
-            elif event == "resume":
-                self._paused = False
-            elif event == "exit":
+            if not self._handle_tray_event(event):
                 self._running = False
                 self._root.quit()
                 return
+
+        # Adopt the shared collection switch every second or so, so the
+        # command line can start and stop a running app.
+        if self._tick_count % self._COLLECT_SYNC_EVERY_N_TICKS == 0:
+            try:
+                self._sync_collection_state()
+            except Exception as exc:
+                print(f"[app] Не удалось прочитать состояние сбора: {exc}")
 
         # If paused, skip detection but keep rescheduling
         if self._paused:
@@ -327,17 +483,37 @@ class HairGuardApp:
         frame_height = frame.shape[0] if hasattr(frame, "shape") else 480
         frame_width = frame.shape[1] if hasattr(frame, "shape") and len(frame.shape) > 1 else 640
 
+        # Detection runs on a downscaled copy: landmarks are normalised, so
+        # they apply equally to the full-resolution frame the clips are cut
+        # from, while the models keep working on the pixel count they were
+        # tuned for.
+        detect_frame = self._downscale_for_detection(frame)
+
         ts_base = int(time.monotonic() * 1000)
-        pose_result = self._detector.process(frame, timestamp_ms=ts_base)
-        hand_results = self._hand_detector.detect(frame, timestamp_ms=ts_base + 1)
-        face_result = self._face_detector.detect(frame, timestamp_ms=ts_base + 2)
+        pose_result = self._detector.process(detect_frame, timestamp_ms=ts_base)
+        hand_results = self._hand_detector.detect(detect_frame, timestamp_ms=ts_base + 1)
+        face_result = self._face_detector.detect(detect_frame, timestamp_ms=ts_base + 2)
         result = self._analyzer.analyze(pose_result, hand_results, face_result, frame_height, frame_width)
 
         # --- Overlay management ---
+        # Deliberately ahead of dataset collection. The alert is what the app
+        # is for; collection is a side activity that must never delay it or
+        # take it down.
+        # The sound follows the hand rather than the overlay: it repeats
+        # while the hand is at the head and stops when it leaves.
+        self._update_alert_sound(result.state, now=time.monotonic())
+
         if result.should_alert and not self._overlay.is_visible():
+            self._hint_collection_is_off()
             self._overlay.show(self._phrases.get_next_phrase())
         elif not result.should_alert and self._overlay.is_visible():
             self._overlay.hide()
+        elif result.should_alert:
+            # Keep claiming the top of the window stack while the alert is up.
+            try:
+                self._overlay.ensure_on_top()
+            except AttributeError:
+                pass
 
         # --- Episode tracking ---
         if result.episode_started:
@@ -352,6 +528,27 @@ class HairGuardApp:
             except Exception as exc:
                 print(f"[app] Не удалось сохранить эпизод: {exc}")
             self._episode_started_at = None
+
+        # --- Dataset collection (last, and never allowed to matter) ---
+        # Driven by the geometric verdict only: the clip is kept whenever the
+        # hand is at the head, and what it was doing is decided later by hand.
+        # Encoding happens on a worker thread, so this call only crops.
+        if self._capture is not None and self._capture.enabled:
+            try:
+                clip_id = self._capture.on_tick(
+                    frame,
+                    pose_result,
+                    hand_results,
+                    in_zone=result.fingertips_in_zone,
+                    hand_index=result.in_zone_hand_index,
+                    face_result=face_result,
+                )
+                if clip_id:
+                    print(
+                        f"[app] Клип сохранён ({self._capture.saved_count} за сеанс): {clip_id}"
+                    )
+            except Exception as exc:
+                print(f"[app] Сбор клипа не удался: {exc}")
 
         # --- Periodic tray tooltip update ---
         if self._tick_count % self._TOOLTIP_EVERY_N_TICKS == 0:
@@ -377,9 +574,153 @@ class HairGuardApp:
         """Called from tray thread when user clicks Resume or auto-resume fires."""
         self._tray_events.put("resume")
 
+    def _on_toggle_collect(self) -> None:
+        """Called from tray thread when the user toggles dataset collection."""
+        self._tray_events.put("collect_toggle")
+
+    def _update_alert_sound(self, state: str, now: float) -> None:
+        """Sound while the hand is at the head; fall silent when it moves away.
+
+        Tied to ALERTING rather than to the overlay, which lingers through
+        the dismissal delay: the noise should end the moment the hand does,
+        because that is what makes moving it away worth doing.
+
+        Hand tracking drops a frame now and then, so a short grace period
+        keeps a flicker from chopping the sound into stutters.
+        """
+        if state == "ALERTING":
+            self._alert_gone_at = None
+            self._sound.start()
+            return
+
+        if not self._sound.active:
+            return
+
+        if self._alert_gone_at is None:
+            self._alert_gone_at = now
+        elif now - self._alert_gone_at >= self._SOUND_LINGER_SEC:
+            self._sound.stop()
+            self._alert_gone_at = None
+
+    def _announce_collection_state(self) -> None:
+        """Say plainly, at startup, whether clips are being recorded.
+
+        Recording is a thing a person must never have to guess about — in
+        either direction. Off and silent means a dataset that never gets
+        collected; on and silent means a camera quietly writing you to disk.
+        """
+        if self._capture is None or self._collect_state is None:
+            return
+
+        if self._collect_state.read():
+            self._apply_collection(True, record=False, announce=False)
+            print("=" * 62)
+            print("  ЗАПИСЬ КЛИПОВ ВКЛЮЧЕНА")
+            print(f"  Клипы: {self._capture.clips_root}")
+            print("  Выключить: hairguard collect off")
+            print("=" * 62)
+        else:
+            print("=" * 62)
+            print("  Запись клипов выключена — клипы сохраняться НЕ будут.")
+            print("  Включить: hairguard collect on")
+            print("=" * 62)
+
+    def _hint_collection_is_off(self) -> None:
+        """Mention the switch the first time detection fires without recording.
+
+        This is the moment the user expects a clip, so it is the moment the
+        absence of one has to be explained.
+        """
+        if self._collect_hint_shown or self._capture is None:
+            return
+        if self._capture.enabled:
+            return
+        self._collect_hint_shown = True
+        print(
+            "[app] Обнаружено кручение, но запись выключена — клип не сохранён. "
+            "Включить: hairguard collect on"
+        )
+
+    def _get_collect_status(self) -> tuple[bool, int]:
+        """(collecting, clips saved this session) for the tray menu label."""
+        if self._capture is None:
+            return False, 0
+        return self._capture.enabled, self._capture.saved_count
+
+    def _toggle_collection(self) -> None:
+        """Flip collection, from the tray. Must run on the main thread."""
+        if self._capture is None:
+            return
+        self._apply_collection(not self._capture.enabled)
+
+    def _sync_collection_state(self) -> None:
+        """Adopt the shared switch, so `hairguard collect on` reaches us.
+
+        The tray is not the only way in, and when clips failed to appear
+        there was no way to tell a missed click from a broken menu. The file
+        is checked periodically and applied when it disagrees with reality.
+        """
+        if self._capture is None or self._collect_state is None:
+            return
+        wanted = self._collect_state.read()
+        if wanted != self._capture.enabled:
+            self._apply_collection(wanted, record=False)
+
+    def _apply_collection(self, enabled: bool, record: bool = True, announce: bool = True) -> None:
+        """Start or stop collecting and say so. Must run on the main thread.
+
+        A switch that records the user has to be loud about it, so the new
+        state is announced three ways: the console, a desktop notification
+        and the tray menu entry.
+        """
+        if self._capture is None:
+            return
+
+        if enabled:
+            self._capture.start()
+        else:
+            self._capture.stop()
+
+        if record and self._collect_state is not None:
+            try:
+                self._collect_state.write(enabled)
+            except Exception as exc:
+                print(f"[app] Не удалось записать состояние сбора: {exc}")
+
+        self._collect_hint_shown = False
+
+        try:
+            self._tray.refresh_menu()
+        except Exception:
+            pass
+
+        if not announce:
+            # Startup prints its own banner; no need to say it twice.
+            return
+
+        # No desktop notification here: plyer creates a window of its own on
+        # Windows, and nothing about dataset collection is worth the risk of
+        # disturbing the fullscreen alert. The console line and the tray entry
+        # already say it.
+        if enabled:
+            print(f"[app] Запись клипов ВКЛЮЧЕНА. Клипы: {self._capture.clips_root}")
+        else:
+            print(
+                f"[app] Запись клипов выключена. Сохранено за сеанс: "
+                f"{self._capture.saved_count}"
+            )
+
     def _on_exit(self) -> None:
         """Called from tray thread or signal handler."""
         self._tray_events.put("exit")
+
+    def _silence_alert(self) -> None:
+        """Stop the alert sound. Pausing or quitting must not leave it ringing."""
+        try:
+            self._sound.stop()
+        except Exception:
+            pass
+        self._alert_gone_at = None
 
     def _hide_overlay_if_visible(self) -> None:
         """Hide overlay if visible. Must be called on main thread."""

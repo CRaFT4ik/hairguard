@@ -9,11 +9,21 @@ HAIRGUARD_DIR = Path.home() / ".hairguard"
 CONFIG_PATH = HAIRGUARD_DIR / "config.yaml"
 
 DEFAULTS: dict[str, Any] = {
-    "camera": 0,
+    "camera": "auto",
+    # Capture resolution. Detail on the hand limits what a model can learn, so
+    # frames are grabbed at 720p even though detection runs on a downscaled
+    # copy (see detection.process_width) and costs the same either way.
+    "camera_width": 1280,
+    "camera_height": 720,
     "detection": {
         "trigger_delay_sec": 0.8,
         "dismiss_delay_sec": 2.5,
         "fps": 10,
+        # Width the detectors see. MediaPipe rescales to its own model input
+        # anyway, and measurement showed the same cost per tick from 640 to
+        # 1280, so the frame is passed through at capture width by default.
+        # Lower it only if a weaker machine needs the headroom.
+        "process_width": 1280,
         "min_confidence": 0.5,
         "combined_threshold": 0.55,
         "rotation_threshold": 0.10,
@@ -24,17 +34,27 @@ DEFAULTS: dict[str, Any] = {
     "alert": {
         "opacity": 0.7,
         "text_color": "#ffffff",
+        # The overlay only works if you are looking at the screen.
+        "sound": True,
     },
     "pause": {
         "auto_resume_minutes": 15,
     },
 }
 
+# Fields that also accept a fixed set of keyword values besides their type.
+_LITERALS: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("camera",): ("auto",),
+}
+
 _FIELD_RULES: list[tuple[tuple[str, ...], type, tuple | None]] = [
     (("camera",), int, (0, 99)),
+    (("camera_width",), int, (160, 4096)),
+    (("camera_height",), int, (120, 2160)),
     (("detection", "trigger_delay_sec"), float, (0.0, None)),
     (("detection", "dismiss_delay_sec"), float, (0.0, None)),
     (("detection", "fps"), (int, float), (1, None)),
+    (("detection", "process_width"), int, (160, 4096)),
     (("detection", "min_confidence"), float, (0.0, 1.0)),
     (("detection", "combined_threshold"), float, (0.1, 2.0)),
     (("detection", "rotation_threshold"), float, (0.01, 0.5)),
@@ -43,6 +63,7 @@ _FIELD_RULES: list[tuple[tuple[str, ...], type, tuple | None]] = [
     (("detection", "hair_zone_offset"), float, (0.0, 2.0)),
     (("alert", "opacity"), float, (0.0, 1.0)),
     (("alert", "text_color"), str, None),
+    (("alert", "sound"), bool, None),
     (("pause", "auto_resume_minutes"), (int, float), (1, None)),
 ]
 
@@ -78,6 +99,10 @@ def _validate_and_fix(data: dict) -> dict:
         if value is None:
             print(f"[config] Missing field '{field_path}', using default.")
             _set(data, keys, _default(keys))
+            continue
+
+        literals = _LITERALS.get(keys)
+        if literals is not None and value in literals:
             continue
 
         if not isinstance(value, expected_type):

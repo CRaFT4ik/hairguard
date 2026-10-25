@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import math
 import time
-import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Landmark index constants
@@ -28,8 +26,7 @@ _MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/latest/hand_landmarker.task"
 )
-_MODEL_DIR  = Path.home() / ".hairguard" / "models"
-_MODEL_PATH = _MODEL_DIR / "hand_landmarker.task"
+_MODEL_NAME = "hand_landmarker.task"
 
 
 # ---------------------------------------------------------------------------
@@ -159,14 +156,10 @@ class HandResult:
 # ---------------------------------------------------------------------------
 
 def _ensure_model() -> str:
-    """Download the hand landmarker model if not already cached."""
-    if _MODEL_PATH.exists():
-        return str(_MODEL_PATH)
-    _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    print("[hand_detector] Downloading hand landmarker model...")
-    urllib.request.urlretrieve(_MODEL_URL, str(_MODEL_PATH))
-    print(f"[hand_detector] Model saved to {_MODEL_PATH}")
-    return str(_MODEL_PATH)
+    """Local path to the hand landmarker model. See ``hairguard.assets``."""
+    from hairguard import assets
+
+    return assets.ensure_task_file(_MODEL_NAME, _MODEL_URL)
 
 
 # ---------------------------------------------------------------------------

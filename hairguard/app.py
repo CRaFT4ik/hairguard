@@ -158,6 +158,15 @@ class HairGuardApp:
             except Exception:
                 pass
 
+        # --- Diagnostic window ---
+        # A viewer process, spawned on demand from the tray and fed from the
+        # tick below. It is created closed and costs nothing until opened;
+        # see hairguard.debugfeed for why it is a separate process with no
+        # camera of its own.
+        from hairguard.debugfeed import DebugFeed
+
+        self._debug_feed = DebugFeed()
+
         # --- Tray ---
         self._tray = TrayApp(
             on_pause=self._on_pause,
@@ -168,6 +177,8 @@ class HairGuardApp:
             on_toggle_collect=self._on_toggle_collect if self._capture else None,
             collect_status_getter=self._get_collect_status if self._capture else None,
             detector_status_getter=self._get_detector_status,
+            on_toggle_debug=self._on_toggle_debug,
+            debug_status_getter=self._debug_view_open,
         )
 
         # --- Frame queue (maxsize=2 — drop old frames if detection is slow) ---
@@ -179,6 +190,11 @@ class HairGuardApp:
         self._running = False
         self._paused = False
         self._tick_count = 0
+        # The rate the loop actually achieves, as opposed to the configured
+        # one. Shown in the diagnostic window because the model's reaction
+        # time is quoted in frames and this is what turns it into seconds.
+        self._tick_fps = 0.0
+        self._last_tick_at: Optional[float] = None
 
         # Episode tracking: store when the current episode started
         self._episode_started_at: Optional[datetime] = None
@@ -248,6 +264,8 @@ class HairGuardApp:
             sys.exit(1)
 
         self._running = True
+        self._shutdown_logged = False
+        self._stop_reason = "выход из цикла событий"
         self._announce_collection_state()
 
         # Start camera capture thread
@@ -266,11 +284,34 @@ class HairGuardApp:
 
         try:
             self._root.mainloop()
+        except BaseException as exc:
+            # Whatever took the event loop down gets named rather than
+            # swallowed: from a tray icon there is nothing else to see.
+            self._stop_reason = f"исключение в цикле событий: {exc!r}"
+            raise
         finally:
-            self.shutdown()
+            self.shutdown(self._stop_reason)
 
-    def shutdown(self) -> None:
-        """Clean up all resources. Safe to call multiple times."""
+    def shutdown(self, reason: str = "обычное завершение") -> None:
+        """Clean up all resources. Safe to call multiple times.
+
+        Says in the log that it happened, and why. A tray application that
+        exits leaves nothing on screen to mark the occasion, so without this
+        line "it stopped working at some point today" and "it crashed" are
+        the same observation. The pair with ``faulthandler`` in
+        ``hairguard.diagnostics`` is what makes them distinguishable: a line
+        here means it was asked to stop, a C-level stack means it was not,
+        and neither means something killed it from outside.
+        """
+        if not getattr(self, "_shutdown_logged", False):
+            self._shutdown_logged = True
+            try:
+                print(f"[app] Завершение работы: {reason}. Тиков за сеанс: "
+                      f"{getattr(self, '_tick_count', 0)}.")
+            except Exception:
+                # A log that cannot be written is not a reason to leave the
+                # camera open and the database locked.
+                pass
         self._running = False
 
         # Silence the alert before anything else: a beep that outlives the
@@ -279,6 +320,10 @@ class HairGuardApp:
             self._sound.stop()
         except Exception:
             pass
+
+        # Close the diagnostic window before the camera goes: a viewer left
+        # alive would keep showing its last frame as though it were current.
+        self._close_debug_view()
 
         # Stop collecting, drop buffered frames, and let the writer finish
         # whatever it already accepted rather than losing a clip on exit.
@@ -455,7 +500,10 @@ class HairGuardApp:
             self._paused = False
         elif event == "collect_toggle":
             self._toggle_collection()
+        elif event == "debug":
+            self._toggle_debug_view()
         elif event == "exit":
+            self._stop_reason = "«Выход» в меню трея или сигнал завершения"
             return False
         return True
 
@@ -465,6 +513,7 @@ class HairGuardApp:
             return
 
         self._tick_count += 1
+        self._update_tick_rate(time.monotonic())
 
         # Drain tray events (thread-safe)
         while not self._tray_events.empty():
@@ -554,6 +603,14 @@ class HairGuardApp:
                 print(f"[app] Не удалось сохранить эпизод: {exc}")
             self._episode_started_at = None
 
+        # --- Diagnostic window (after the alert, like collection) ---
+        # A no-op unless the user has the window open, and then only a
+        # reference handed to another thread. The frame given is the one the
+        # detectors saw, which is the question the window answers.
+        self._publish_debug_frame(
+            detect_frame, pose_result, hand_results, face_result, result
+        )
+
         # --- Dataset collection (last, and never allowed to matter) ---
         # Driven by the geometric verdict only: the clip is kept whenever the
         # hand is at the head, and what it was doing is decided later by hand.
@@ -602,6 +659,121 @@ class HairGuardApp:
     def _on_toggle_collect(self) -> None:
         """Called from tray thread when the user toggles dataset collection."""
         self._tray_events.put("collect_toggle")
+
+    def _on_toggle_debug(self) -> None:
+        """Called from tray thread when the user opens or closes the window.
+
+        Queued rather than acted on: spawning a process and reading app state
+        from the pystray thread is the shape of mistake that has broken the
+        overlay here before.
+        """
+        self._tray_events.put("debug")
+
+    # ------------------------------------------------------------------
+    # Diagnostic window
+    # ------------------------------------------------------------------
+
+    def _debug_view_open(self) -> bool:
+        """Whether the diagnostic window is up. Read by the tray menu."""
+        try:
+            return bool(self._debug_feed.active)
+        except Exception:
+            return False
+
+    def _toggle_debug_view(self) -> None:
+        """Open or close the window. Must run on the main thread."""
+        try:
+            if self._debug_feed.active:
+                self._debug_feed.close()
+            else:
+                self._debug_feed.open()
+                print(
+                    "[app] Окно диагностики: показывает то, что видит этот "
+                    "детектор. Вторая камера не открывается."
+                )
+        except Exception as exc:
+            print(f"[app] Окно диагностики не переключилось: {exc}")
+        try:
+            self._tray.refresh_menu()
+        except Exception:
+            pass
+
+    def _close_debug_view(self) -> None:
+        """Shut the window down. Called on exit, where it must not block."""
+        try:
+            self._debug_feed.close(timeout=1.0)
+        except Exception:
+            pass
+
+    def _publish_debug_frame(
+        self,
+        frame: object,
+        pose_result: object,
+        hand_results: object,
+        face_result: object,
+        result: object,
+    ) -> None:
+        """Offer this tick to the diagnostic window, if one is open.
+
+        Returns before doing anything at all in the overwhelmingly common
+        case where it is not, so an unopened window costs the tick one
+        attribute read. When it is open, the only work here is assembling a
+        dataclass of references — the JPEG and the pipe write happen on the
+        feed's own thread.
+        """
+        feed = getattr(self, "_debug_feed", None)
+        if feed is None or not feed.active:
+            return
+        try:
+            from hairguard.debugwire import Snapshot
+
+            feed.publish(
+                Snapshot(
+                    frame=frame,
+                    pose=pose_result,
+                    hands=hand_results,
+                    face=face_result,
+                    result=result,
+                    fps=self._tick_fps,
+                    combined_threshold=float(
+                        self._config.get("detection", "combined_threshold") or 0.55
+                    ),
+                    hair_zone_offset=float(
+                        self._config.get("detection", "hair_zone_offset") or 0.4
+                    ),
+                    model_threshold=(
+                        self._twist_model.threshold
+                        if self._twist_model is not None
+                        else None
+                    ),
+                    detector_status=self._get_detector_status(),
+                    tick=self._tick_count,
+                )
+            )
+        except Exception as exc:
+            # The window is the thing that stops, never the detector.
+            print(f"[app] Окно диагностики отключено: {exc}")
+            self._close_debug_view()
+
+    def _update_tick_rate(self, now: float) -> None:
+        """Track the loop's real rate with an EMA over tick spacing.
+
+        A gap longer than a couple of seconds is the camera disappearing or
+        the machine sleeping, and is adopted outright rather than averaged
+        in: showing the pre-sleep rate afterwards would hide the one thing
+        worth noticing.
+        """
+        last, self._last_tick_at = self._last_tick_at, now
+        if last is None:
+            return
+        delta = now - last
+        if delta <= 0:
+            return
+        instant = 1.0 / delta
+        if delta > 2.0 or self._tick_fps <= 0.0:
+            self._tick_fps = instant
+        else:
+            self._tick_fps += 0.2 * (instant - self._tick_fps)
 
     def _update_alert_sound(self, state: str, now: float) -> None:
         """Sound while the hand is at the head; fall silent when it moves away.
@@ -776,6 +948,7 @@ class HairGuardApp:
 
     def _handle_signal(self, signum: int, frame: object) -> None:
         """Handle SIGTERM/SIGINT: initiate clean shutdown via tkinter."""
+        self._stop_reason = f"сигнал {signum}"
         self._on_exit()
 
     # ------------------------------------------------------------------

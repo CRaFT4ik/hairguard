@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -27,19 +25,18 @@ _KEY_LANDMARKS = {
 }
 
 _MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task"
-_MODEL_DIR = Path.home() / ".hairguard" / "models"
-_MODEL_PATH = _MODEL_DIR / "pose_landmarker_full.task"
+_MODEL_NAME = "pose_landmarker_full.task"
 
 
 def _ensure_model() -> str:
-    """Download the pose landmarker model if not cached."""
-    if _MODEL_PATH.exists():
-        return str(_MODEL_PATH)
-    _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    print("[detector] Downloading pose landmarker model...")
-    urllib.request.urlretrieve(_MODEL_URL, str(_MODEL_PATH))
-    print(f"[detector] Model saved to {_MODEL_PATH}")
-    return str(_MODEL_PATH)
+    """Local path to the pose landmarker model.
+
+    Cached copy, then the one a build bundled, then a download — see
+    ``hairguard.assets``, which all three detectors share.
+    """
+    from hairguard import assets
+
+    return assets.ensure_task_file(_MODEL_NAME, _MODEL_URL)
 
 
 @dataclass

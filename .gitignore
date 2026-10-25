@@ -3,3 +3,7 @@ CLAUDE.local.md
 hairguard.egg-info/
 __pycache__/
 *.pyc
+
+# Bundle output (bundle/build.py)
+build/
+dist/

@@ -61,6 +61,18 @@ class TrayApp:
         Shown as a disabled menu entry, so which of the two detectors is
         running is something the user can read rather than infer. Omitted
         from the menu when not supplied.
+    on_toggle_debug:
+        Called (from tray thread) when the user opens or closes the
+        diagnostic window.  When omitted the entry is left out of the menu.
+    debug_status_getter:
+        Returns True while the diagnostic window is open, so the entry can
+        say which way it is about to go.  Re-read every time the menu opens,
+        because the window can be closed from its own title bar.
+    on_open_log:
+        Called (from tray thread) to open the log file.  Defaults to
+        ``hairguard.diagnostics.reveal``: a packaged app has no console, so
+        this entry is the user's only route to what the app said about
+        itself and is never omitted.
     """
 
     def __init__(
@@ -73,6 +85,9 @@ class TrayApp:
         on_toggle_collect: Optional[Callable[[], None]] = None,
         collect_status_getter: Optional[Callable[[], tuple[bool, int]]] = None,
         detector_status_getter: Optional[Callable[[], str]] = None,
+        on_toggle_debug: Optional[Callable[[], None]] = None,
+        debug_status_getter: Optional[Callable[[], bool]] = None,
+        on_open_log: Optional[Callable[[], None]] = None,
     ) -> None:
         self._on_pause = on_pause
         self._on_resume = on_resume
@@ -82,6 +97,9 @@ class TrayApp:
         self._on_toggle_collect = on_toggle_collect
         self._collect_status_getter = collect_status_getter
         self._detector_status_getter = detector_status_getter
+        self._on_toggle_debug = on_toggle_debug
+        self._debug_status_getter = debug_status_getter
+        self._on_open_log = on_open_log
 
         self._paused = False
         self._pause_timer: Optional[threading.Timer] = None
@@ -188,6 +206,23 @@ class TrayApp:
         except Exception:
             return "Детектор: неизвестно"
 
+    def _debug_label(self, item: object = None) -> str:  # noqa: ARG002
+        """Live text for the diagnostic entry — pystray re-reads it on open.
+
+        Read fresh rather than tracked: the window can be closed from its own
+        title bar, and a menu that then still offered to close it would be
+        describing a world that no longer exists.
+        """
+        open_now = False
+        if self._debug_status_getter is not None:
+            try:
+                open_now = bool(self._debug_status_getter())
+            except Exception:
+                open_now = False
+        if open_now:
+            return "Диагностика: закрыть окно"
+        return "Диагностика: открыть окно"
+
     def _rebuild_menu(self) -> None:
         """Rebuild and reapply the pystray menu."""
         if self._icon is None:
@@ -235,6 +270,16 @@ class TrayApp:
                 pystray.MenuItem(self._collect_label, self._handle_toggle_collect),
             ]
 
+        # Diagnosis. Both entries answer a question a packaged app otherwise
+        # has no way to answer: what is the detector seeing, and what did the
+        # app already say about itself.
+        items.append(pystray.Menu.SEPARATOR)
+        if self._on_toggle_debug is not None:
+            items.append(
+                pystray.MenuItem(self._debug_label, self._handle_toggle_debug)
+            )
+        items.append(pystray.MenuItem("Открыть журнал", self._handle_open_log))
+
         items += [
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", self._handle_exit),
@@ -280,6 +325,24 @@ class TrayApp:
         if self._on_toggle_collect is not None:
             self._on_toggle_collect()
         self._rebuild_menu()
+
+    def _handle_toggle_debug(self, icon: object, item: object) -> None:  # noqa: ARG002
+        if self._on_toggle_debug is not None:
+            self._on_toggle_debug()
+        self._rebuild_menu()
+
+    def _handle_open_log(self, icon: object, item: object) -> None:  # noqa: ARG002
+        """Open the log. Runs on the tray thread, which is safe: this touches
+        the desktop's file opener and nothing of the app's."""
+        try:
+            if self._on_open_log is not None:
+                self._on_open_log()
+                return
+            from hairguard import diagnostics
+
+            diagnostics.reveal()
+        except Exception as exc:
+            print(f"[tray] Не удалось открыть журнал: {exc}")
 
     def _handle_stats(self, icon: object, item: object) -> None:  # noqa: ARG002
         stats_text = self._stats_getter()

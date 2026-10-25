@@ -14,9 +14,7 @@ FaceDetector(min_confidence) — detector wrapping MediaPipe FaceLandmarker
 from __future__ import annotations
 
 import time
-import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -27,19 +25,14 @@ _MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/latest/face_landmarker.task"
 )
-_MODEL_DIR = Path.home() / ".hairguard" / "models"
-_MODEL_PATH = _MODEL_DIR / "face_landmarker.task"
+_MODEL_NAME = "face_landmarker.task"
 
 
 def _ensure_model() -> str:
-    """Return local model path, downloading if necessary."""
-    if _MODEL_PATH.exists():
-        return str(_MODEL_PATH)
-    _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    print("[face_detector] Downloading FaceLandmarker model…")
-    urllib.request.urlretrieve(_MODEL_URL, str(_MODEL_PATH))
-    print(f"[face_detector] Model saved to {_MODEL_PATH}")
-    return str(_MODEL_PATH)
+    """Local path to the face landmarker model. See ``hairguard.assets``."""
+    from hairguard import assets
+
+    return assets.ensure_task_file(_MODEL_NAME, _MODEL_URL)
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,14 @@ import argparse
 import subprocess
 import sys
 import time
+from typing import Optional, Sequence
+
+
+def _pid_file():
+    """The instance guard. A seam, so commands that consult it are testable."""
+    from hairguard.pid import PidFile
+
+    return PidFile()
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +62,16 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def _start_background(args: argparse.Namespace) -> None:
-    """Re-launch 'hairguard start' (without --background) as a detached process."""
-    import os
+    """Re-launch 'hairguard start' (without --background) as a detached process.
 
-    cmd = [sys.executable, "-m", "hairguard", "start"]
+    Inside a bundle ``sys.executable`` is the app rather than an interpreter,
+    so the ``-m hairguard`` form would produce a command line the app's own
+    argparse rejects.
+    """
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "start"]
+    else:
+        cmd = [sys.executable, "-m", "hairguard", "start"]
     if args.camera is not None:
         cmd += ["--camera", str(args.camera)]
     if getattr(args, "collect", False):
@@ -364,10 +378,327 @@ def cmd_autostart(args: argparse.Namespace) -> None:
         autostart_off()
 
 
-def cmd_debug(args: argparse.Namespace) -> None:
+def cmd_debug(args: argparse.Namespace) -> Optional[int]:
+    """Open the standalone debug view, which opens its own camera.
+
+    Refused while the app is running, and that refusal is the point. This
+    command builds a second ``CameraManager`` on a device the app already
+    holds. On Windows that does not fail — it succeeds and returns black
+    frames, which is how this project once had its own camera auto-detection
+    report a live webcam as blank. The user would be looking at an empty
+    picture and concluding the detector was broken.
+
+    The tray's window has no camera at all; it is fed from the running
+    detection tick. So the fix is to send people there rather than to make
+    this command cleverer.
+    """
+    if not getattr(args, "force", False) and _pid_file().is_running():
+        pid = _pid_file().read()
+        print(
+            f"HairGuard уже работает (PID {pid}) и держит камеру.\n"
+            "\n"
+            "Эта команда открыла бы камеру второй раз. В Windows это не "
+            "ошибка: камера\n"
+            "откроется и будет отдавать чёрные кадры — окно покажет пустоту, "
+            "а виноват\n"
+            "будет выглядеть детектор.\n"
+            "\n"
+            "Откройте окно диагностики из меню в трее: «Диагностика: открыть "
+            "окно». Оно\n"
+            "показывает то, что видит работающий детектор, и своей камеры не "
+            "имеет.\n"
+            "\n"
+            "Если камер несколько и вторая свободна: hairguard debug --force "
+            "--camera N"
+        )
+        return 1
+
     from hairguard.debugview import main as debugview_main
 
     debugview_main(camera=args.camera)
+    return 0
+
+
+def cmd_debug_viewer(_args: argparse.Namespace) -> Optional[int]:
+    """Become the diagnostic window, reading frames from standard input.
+
+    Not meant to be typed. The running app spawns this (see
+    ``hairguard.debugfeed``) and pushes it the detector state it already
+    computed, which is why this process has no camera and no detectors.
+    """
+    from hairguard.debugviewer import main as viewer_main
+
+    return viewer_main()
+
+
+def cmd_log(args: argparse.Namespace) -> None:
+    """Show where the log is and what is at the end of it.
+
+    The packaged app has no console, so every ``print`` it makes goes here.
+    When someone says it does nothing, this is the command that answers.
+    """
+    from hairguard import diagnostics
+
+    path = diagnostics.log_path()
+    print(f"Журнал: {path}")
+
+    limit = int(getattr(args, "tail", 40) or 40)
+    lines = diagnostics.tail(limit)
+    if not lines:
+        print("Журнал пуст или не существует — приложение ещё не запускалось.")
+        return
+    print("-" * 70)
+    for line in lines:
+        print(line)
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+#
+# Each probe is a small function so that the ones that cannot be simulated on
+# a working machine can be tested by replacing them.
+
+
+def _probe_features() -> tuple[bool, str]:
+    """Is the feature extractor the model was trained with importable?
+
+    The one failure that nothing else notices. ``twistnet`` compares the
+    model's declared feature width against this module at load time, so
+    without it the model is refused and the app runs the old rule.
+    """
+    try:
+        from hairguard.labpath import ensure_hairlab_importable
+
+        ensure_hairlab_importable()
+        from hairlab.features import FEATURE_DIM
+
+        return True, f"{FEATURE_DIM} признаков"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _probe_onnxruntime() -> tuple[bool, str]:
+    try:
+        import onnxruntime
+
+        return True, onnxruntime.__version__
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+#: Modules that belong to training and must not be reachable from a shipped
+#: build. torch alone is 2.8 GB.
+_TRAINING_ONLY = ("torch", "pytorch_lightning", "torchmetrics", "sklearn", "onnx")
+
+
+def _probe_training_stack() -> list[str]:
+    """Which training-only modules this process can import.
+
+    Asked from inside the running application because that is the only
+    vantage point that settles it. Walking a bundle's directory tree finds
+    torch, which is mostly compiled — but ``pytorch_lightning`` is pure
+    Python and would live entirely inside the bundle's archive, invisible to
+    any amount of looking at files. ``find_spec`` sees both.
+    """
+    import importlib.util
+
+    found: list[str] = []
+    for name in _TRAINING_ONLY:
+        try:
+            if importlib.util.find_spec(name) is not None:
+                found.append(name)
+        except (ImportError, ValueError):
+            pass
+    return found
+
+
+def _load_config():
+    from hairguard.config import Config
+
+    return Config()
+
+
+def _probe_landmark_models() -> list[tuple[str, str, bool]]:
+    """``(filename, where it is, present)`` for each MediaPipe model."""
+    from hairguard import assets
+    from hairguard.detector import _MODEL_NAME as POSE
+    from hairguard.face_detector import _MODEL_NAME as FACE
+    from hairguard.hand_detector import _MODEL_NAME as HAND
+
+    report: list[tuple[str, str, bool]] = []
+    for name in (HAND, FACE, POSE):
+        cached = assets.user_dir() / name
+        bundled = assets.bundled_dir() / name
+        if cached.is_file():
+            report.append((name, f"в кэше ({cached.parent})", True))
+        elif bundled.is_file():
+            report.append((name, "в сборке", True))
+        else:
+            report.append((name, "нет — скачается при первом запуске", False))
+    return report
+
+
+def cmd_doctor(args: argparse.Namespace) -> Optional[int]:
+    """Report what this installation can and cannot do, and why.
+
+    The companion to the log. A packaged app has no console, so when it
+    misbehaves there has to be something that can be run and read: the log
+    says what happened, this says what is present. It is also what the build
+    asks the finished bundle, from a home directory pointed somewhere empty,
+    because pure Python modules live inside the bundle's archive and no
+    amount of looking at the directory tree proves they are there.
+
+    It deliberately never opens a camera. The moment it is most useful is
+    while the app is running and holding the device, and a second open on
+    Windows succeeds and returns black frames.
+    """
+    import json
+    import sys as _sys
+
+    from hairguard import __version__, diagnostics
+
+    problems: list[str] = []
+    report: dict = {
+        "version": __version__,
+        "frozen": diagnostics.is_frozen(),
+        "executable": _sys.executable,
+        "platform": _sys.platform,
+        "log": str(diagnostics.log_path()),
+    }
+
+    features_ok, features_note = _probe_features()
+    report["features_ok"] = features_ok
+    if features_ok:
+        report["feature_dim"] = int(features_note.split()[0])
+    else:
+        problems.append(
+            f"hairlab.features недоступен ({features_note}) — модель будет "
+            "отвергнута, приложение останется на пороговом правиле"
+        )
+
+    ort_ok, ort_note = _probe_onnxruntime()
+    report["onnxruntime"] = ort_note if ort_ok else None
+    if not ort_ok:
+        problems.append(
+            f"onnxruntime недоступен ({ort_note}) — запустить модель нечем, "
+            "приложение останется на пороговом правиле"
+        )
+
+    config = None
+    try:
+        config = _load_config()
+    except Exception as exc:
+        problems.append(f"настройки не читаются: {exc}")
+
+    detector_status = "неизвестно"
+    if config is not None:
+        try:
+            from hairguard.twistnet import load_configured
+
+            model, detector_status = load_configured(config)
+            if model is not None:
+                report["threshold"] = model.threshold
+                report["seq_len"] = model.seq_len
+                report["model_dir"] = str(model.info.directory)
+                report["trained_at"] = model.info.trained_at
+                model.close()
+            elif "отключена" not in detector_status:
+                # A deliberate `enabled: false` is the documented way back to
+                # the rule and is not a fault. Anything else is.
+                problems.append(f"модель не используется: {detector_status}")
+        except Exception as exc:
+            detector_status = f"не определён: {exc}"
+            problems.append(f"не удалось выяснить детектор: {exc}")
+    report["detector"] = detector_status
+
+    landmarks = _probe_landmark_models()
+    report["landmark_models"] = {name: where for name, where, _ in landmarks}
+
+    camera_setting = None
+    if config is not None:
+        try:
+            camera_setting = config.get("camera")
+        except Exception:
+            camera_setting = None
+    report["camera"] = camera_setting
+
+    running_pid = None
+    try:
+        guard = _pid_file()
+        if guard.is_running():
+            running_pid = guard.read()
+    except Exception:
+        running_pid = None
+    report["running_pid"] = running_pid
+
+    # Only meaningful inside a bundle, where importing torch would mean 2.8 GB
+    # of it shipped. From a source checkout these are simply installed, which
+    # is how the model got trained in the first place.
+    unwanted = _probe_training_stack()
+    report["training_stack"] = unwanted
+    if report["frozen"] and unwanted:
+        problems.append(
+            "в сборку попал обучающий стек: " + ", ".join(unwanted) + " — "
+            "приложению он не нужен, а torch один весит 2.8 ГБ"
+        )
+
+    report["problems"] = problems
+    report["ok"] = not problems
+
+    if getattr(args, "json", False):
+        # Escaped rather than literal UTF-8, deliberately. Every message in
+        # this report is Russian, and a Windows console hands the child
+        # process a single-byte code page: the build's first attempt at
+        # reading this back decoded cp1251 bytes as UTF-8 and concluded the
+        # bundle had chosen the wrong detector. ASCII escapes survive any
+        # code page, and ``json.loads`` turns them back into the real text.
+        print(json.dumps(report, ensure_ascii=True, indent=2))
+        return 0 if not problems else 1
+
+    print(f"HairGuard {__version__}")
+    print(f"Сборка:      {'упакованная' if report['frozen'] else 'из исходников'}")
+    print(f"Программа:   {report['executable']}")
+    print(f"Платформа:   {report['platform']}")
+    print(f"Журнал:      {report['log']}")
+    print()
+    print(
+        f"hairlab.features: {'ok — ' + features_note if features_ok else 'НЕТ — ' + features_note}"
+    )
+    print(f"onnxruntime:      {ort_note if ort_ok else 'НЕТ — ' + ort_note}")
+    if "model_dir" in report:
+        print(
+            f"Артефакты:        {report['model_dir']} "
+            f"(порог {report['threshold']:.3f}, окно {report['seq_len']}, "
+            f"обучена {report['trained_at']})"
+        )
+    print()
+    print(f"Детектор: {detector_status}")
+    print()
+    print("Модели MediaPipe:")
+    for name, where, _present in landmarks:
+        print(f"  {name:<28} {where}")
+    print()
+    if report["frozen"]:
+        print()
+        print(
+            "Обучающий стек: "
+            + (", ".join(unwanted) + " — лишний вес" if unwanted else "отсутствует")
+        )
+    print()
+    print(f"Камера:      {camera_setting!r} (не проверяется — её может держать приложение)")
+    print(
+        "Экземпляр:   "
+        + (f"запущен, PID {running_pid}" if running_pid else "не запущен")
+    )
+
+    if problems:
+        print()
+        print(f"Проблем: {len(problems)}")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    return 0
 
 
 def cmd_not_implemented(_args: argparse.Namespace) -> None:
@@ -442,16 +773,54 @@ def build_parser() -> argparse.ArgumentParser:
     p_debug = sub.add_parser("debug", help="Open live debug/visualization view")
     p_debug.add_argument("--camera", type=int, default=None, metavar="N",
                          help="Camera index to use (default: from config)")
+    p_debug.add_argument("--force", action="store_true",
+                         help="Open a camera even while HairGuard is running")
     p_debug.set_defaults(func=cmd_debug)
+
+    # debug-viewer — spawned by the running app, not typed by a person, so
+    # it is left out of the command list. No `help=` at all rather than
+    # help=SUPPRESS: argparse prints a subparser's help verbatim and happily
+    # shows "==SUPPRESS==" in the listing.
+    from hairguard.debugfeed import VIEWER_COMMAND
+
+    p_viewer = sub.add_parser(VIEWER_COMMAND)
+    p_viewer.set_defaults(func=cmd_debug_viewer)
+
+    # doctor
+    p_doctor = sub.add_parser(
+        "doctor", help="Report what this installation can do, and what is missing"
+    )
+    p_doctor.add_argument("--json", action="store_true",
+                          help="Machine-readable form, used by the build checks")
+    p_doctor.set_defaults(func=cmd_doctor)
+
+    # log
+    p_log = sub.add_parser("log", help="Show the log file and its last lines")
+    p_log.add_argument("--tail", type=int, default=40, metavar="N",
+                       help="How many trailing lines to print (default 40)")
+    p_log.set_defaults(func=cmd_log)
 
     return parser
 
 
-def main() -> None:
+def main(
+    argv: Optional[Sequence[str]] = None,
+    default_argv: Optional[Sequence[str]] = None,
+) -> Optional[int]:
+    """Parse and dispatch.
+
+    ``default_argv`` is what to do when given nothing, which only the
+    windowed executable supplies: a double-click passes no arguments, and
+    argparse's answer to no arguments is a usage error printed to a console
+    that does not exist in that build.
+    """
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if not arguments and default_argv:
+        arguments = list(default_argv)
     parser = build_parser()
-    args = parser.parse_args()
-    args.func(args)
+    args = parser.parse_args(arguments)
+    return args.func(args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

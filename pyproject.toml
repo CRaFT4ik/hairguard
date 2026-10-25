@@ -14,6 +14,11 @@ dependencies = [
     "pyyaml",
     "colorama",
     "plyer",
+    # Runs the trained detector. It was previously listed only under the
+    # `train` extra, which meant a plain `pip install hairguard` produced an
+    # app that started normally, reported "модель недоступна" in one line of
+    # console output, and then caught 53.9% of episodes instead of 86.7%.
+    "onnxruntime",
 ]
 
 [project.optional-dependencies]
@@ -25,10 +30,17 @@ lab = ["fastapi", "uvicorn"]
 # itself, not just to run the result — torch.onnx.export fails without them.
 train = ["torch", "pytorch-lightning", "torchmetrics", "scikit-learn",
          "onnx", "onnxscript", "onnxruntime"]
+# Building the double-clickable bundles. See bundle/build.py.
+package = ["pyinstaller>=6.10"]
 
 [project.scripts]
-hairguard = "hairguard.cli:main"
+hairguard = "hairguard.entry:console_main"
 hairlab = "hairlab.__main__:main"
+
+[project.gui-scripts]
+# No console window: the same thing the bundled HairGuard.exe is, for people
+# who installed from source and want an icon to double-click.
+hairguard-gui = "hairguard.entry:gui_main"
 
 [tool.setuptools.packages.find]
 where = ["."]

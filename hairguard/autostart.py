@@ -63,14 +63,59 @@ def _xml_escape(value: str) -> str:
     )
 
 
-def _hairguard_command() -> tuple[list[str], Optional[str]]:
-    """Return (argv, cwd) for invoking the hairguard CLI from autostart.
+def _is_frozen() -> bool:
+    """True inside a PyInstaller bundle, where sys.executable is the app."""
+    return bool(getattr(sys, "frozen", False))
 
-    Prefers an installed `hairguard` script when available; otherwise
-    falls back to `python -m hairguard` with the project directory as
-    cwd, so the launcher works even when the package was not pip-installed
-    (e.g. when the user runs the app via `python -m hairguard start`).
+
+def _bundle_launcher() -> Optional[Path]:
+    """The windowed executable of this bundle, if there is one beside us.
+
+    A bundle ships two binaries: the windowed one for the icon and a console
+    one for diagnosis. Autostart wants the windowed one — registering the
+    console binary would flash a terminal at every login, which for a tray
+    utility that is supposed to disappear is a daily annoyance with no
+    upside.
     """
+    if not _is_frozen():
+        return None
+    here = Path(sys.executable).resolve()
+    for name in ("HairGuard.exe", "HairGuard"):
+        candidate = here.parent / name
+        if candidate.is_file():
+            return candidate
+    return here
+
+
+def _launch_args() -> list[str]:
+    """What to ask the launcher to do at login.
+
+    ``--background`` exists to escape a console by re-launching detached. A
+    windowed bundle has no console to escape, so the extra hop would buy
+    nothing and add one more place for the launch to fail unseen.
+    """
+    if _is_frozen():
+        return ["start"]
+    return ["start", "--background"]
+
+
+def _hairguard_command() -> tuple[list[str], Optional[str]]:
+    """Return (argv, cwd) for invoking HairGuard from autostart.
+
+    Inside a bundle this is the bundle's own launcher: ``sys.executable`` is
+    the app, not an interpreter, so the ``python -m hairguard`` fallback
+    below would write ``HairGuard.exe -m hairguard start`` into the login
+    entry — a command line argparse rejects, failing silently at a login
+    months from now and looking like the app had simply stopped working.
+
+    Otherwise: an installed `hairguard` script when there is one, else
+    `python -m hairguard` with the project directory as cwd, so the launcher
+    works even when the package was never pip-installed.
+    """
+    launcher = _bundle_launcher()
+    if launcher is not None:
+        return ([str(launcher)], None)
+
     scripts_dir = Path(sys.executable).parent
 
     if sys.platform == "win32":
@@ -107,7 +152,7 @@ def _windows_quote(arg: str) -> str:
 def autostart_on() -> None:
     """Enable HairGuard autostart for the current user."""
     argv, cwd = _hairguard_command()
-    full_argv = argv + ["start", "--background"]
+    full_argv = argv + _launch_args()
 
     if sys.platform == "win32":
         bat = _bat_path()

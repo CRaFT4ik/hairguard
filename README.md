@@ -59,9 +59,33 @@ included.
 
 ---
 
-## Installation
+## Installing
 
-Python 3.11+ required.
+### The application
+
+Download the archive for your system, unpack it, and run `HairGuard`. It puts
+an icon in the system tray or menu bar and stays there. No Python, no
+terminal, nothing else to install — the trained model and the three MediaPipe
+landmark models are inside, so it detects on the first run and works offline.
+
+| | what you get | how to start it |
+|---|---|---|
+| **Windows** | a folder with `HairGuard.exe` | double-click `HairGuard.exe` |
+| **macOS** | `HairGuard.app` | drag to Applications, then open it — [read this first](#macos) |
+| **Linux** | a folder with `HairGuard` | run `./install-desktop-entry.sh` once, then launch it from the menu |
+
+To have it start with the machine:
+
+```
+hairguard-cli autostart on      # Windows: hairguard-cli.exe autostart on
+```
+
+`hairguard-cli` sits in the same folder and is the whole command line. You
+never need it to use the app; it is there for when something is wrong.
+
+### From source
+
+Python 3.11+.
 
 ```bash
 git clone https://github.com/CRaFT4ik/hairguard
@@ -80,10 +104,66 @@ pip install -e ".[lab]" -e ".[train]"
 python -m hairguard start          # detection, with a tray icon
 python -m hairguard cameras        # list cameras if autodetect picks wrong
 python -m hairguard stats          # episodes today vs yesterday
+python -m hairguard doctor         # what is installed, and which detector will run
 python -m hairguard stop
 ```
 
 At startup the app prints which camera it chose and which detector is active.
+Everything it prints also goes to `~/.hairguard/hairguard.log`.
+
+### The tray menu
+
+| entry | |
+|---|---|
+| Пауза | stops detection, resuming by itself after 15 minutes |
+| Статистика | today's episodes |
+| Детектор | which of the two detectors is deciding right now |
+| Сбор данных | start or stop recording clips for training |
+| **Диагностика** | opens a window showing what the detector is seeing |
+| **Открыть журнал** | opens `~/.hairguard/hairguard.log` |
+
+---
+
+## When something looks wrong
+
+The app has no console, so it writes one instead. Three things to reach for,
+in order.
+
+**Open the diagnostic window from the tray.** It draws the hand skeleton, the
+hair zone, and every value the detector is deciding on — including the model's
+score against its threshold, frame by frame. "What is it actually seeing right
+now" is usually the only question worth asking, and this answers it.
+
+It has no camera of its own. The running app already holds the webcam, and on
+Windows opening a held camera a second time does not fail — it quietly returns
+black frames. So the window is a separate process fed from the detection loop
+itself: what it shows is what the detector decided on, and it cannot stall or
+crash the alert.
+
+(The `hairguard debug` command is the other way round: it opens its own camera
+and runs its own copy of the pipeline, which is right when the app is *not*
+running. It refuses to start while the app is, and says why.)
+
+**Ask it what it has.**
+
+```
+hairguard-cli doctor
+```
+
+Which detector will decide and why, whether the feature extractor the model is
+validated against is importable, whether `onnxruntime` is there, where each
+MediaPipe model came from, and whether an instance is already running. It never
+opens the camera, so it is safe to run while the app is working.
+
+**Read the log.**
+
+```
+hairguard-cli log --tail 50
+```
+
+`~/.hairguard/hairguard.log`, timestamped, rotated at half a megabyte with one
+previous file kept. If the app dies before the tray icon appears, the traceback
+is in there and a dialog box says so.
 
 ---
 
@@ -170,8 +250,12 @@ lowest one that keeps false alarms on a resting hand under 5%.
 
 ## Privacy
 
-- All processing is local. Nothing is uploaded, and the app makes no network
-  requests except to download the MediaPipe models on first run.
+- All processing is local. Nothing is uploaded. The downloaded application
+  makes no network requests at all — the MediaPipe models are inside it; a
+  source install fetches them once on first run.
+- The diagnostic window is a child process talking to the app over a pipe,
+  not a socket. Nothing listens on a port, and no other program on the
+  machine can attach to the video.
 - No video is recorded unless you turn collection on.
 - Collected clips, labels, episode history and the trained model live in
   `~/.hairguard/` and are never written into the repository.
@@ -183,10 +267,89 @@ lowest one that keeps false alarms on a resting hand under 5%.
 
 | Platform | Status |
 |----------|--------|
-| Windows 10/11 | Full support |
-| Linux (X11) | Full support |
+| Windows 10/11 | Full support. The bundle is built and tested here. |
+| Linux (X11) | Full support from source. The bundle's build configuration is written but unverified. |
 | Linux (Wayland) | Overlay via `gtk-layer-shell` — `pip install hairguard[wayland]` |
-| macOS | Autostart and statistics supported; overlay less tested |
+| macOS | Autostart and statistics supported; overlay less tested. The `.app` is unverified — see below. |
+
+### macOS
+
+Everything in this section is reasoned from the documentation rather than
+observed: the bundles were built on Windows and no part of the macOS path has
+been run. Expect to hit at least the first of these.
+
+**Gatekeeper will refuse an unsigned app.** The `.app` is not signed and not
+notarised, so a copy downloaded with a browser carries a quarantine attribute
+and macOS will say it is damaged and should be moved to the Bin. It is not
+damaged; that is the message macOS gives for "unsigned and quarantined". Clear
+the attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/HairGuard.app
+```
+
+Right-click → Open also works on some versions. The real fix is a paid Apple
+Developer account, `codesign --deep --options runtime` and `notarytool`, which
+is not something this project has.
+
+**Build it on the Mac you will run it on.** An `.app` built on Apple Silicon
+will not run on Intel and the reverse is also true: the OpenCV and MediaPipe
+wheels carry architecture-specific binaries, and the bundler copies whichever
+one it finds. There is no universal build here.
+
+**The camera prompt has to be answered.** The bundle declares
+`NSCameraUsageDescription`, without which macOS terminates the process the
+instant it touches the webcam — silently, with no prompt. With it, the first
+run asks. If you refuse, or if it never asks, the app sees nothing: System
+Settings → Privacy & Security → Camera. The log will show the camera failing
+to open.
+
+**It stays out of the Dock.** `LSUIElement` is set, so it lives in the menu
+bar only — correct for something with no window, but it also means closing it
+is a menu-bar action, not ⌘Q.
+
+Accessibility and Screen Recording permissions are *not* needed: the overlay
+is an ordinary always-on-top window and nothing reads the screen or the
+keyboard.
+
+### Linux
+
+Also unverified — written on Windows and not run. The bundle is a folder;
+`install-desktop-entry.sh` inside it writes a `.desktop` entry into
+`~/.local/share/applications` pointing at wherever you unpacked it, which is
+what makes it appear in the applications menu. Nothing needs root.
+
+Two things to expect. The fullscreen overlay uses X11 window hints and needs
+`gtk-layer-shell` under Wayland, which the bundle does not carry — under
+Wayland use the source install with `pip install hairguard[wayland]`. And
+glibc is not bundled: a folder built on a newer distribution will not start on
+an older one, so build on the oldest system you intend to support.
+
+---
+
+## Building the application
+
+```bash
+pip install -e ".[package]"
+python bundle/build.py
+```
+
+The result is in `dist/`, with a zip beside it. It takes about a minute and
+produces roughly 300 MB unpacked, 137 MB zipped, of which OpenCV is 118 MB and
+onnxruntime 32 MB.
+
+Run it on the platform you are building for; there is no cross-compiling.
+Everything that decides what goes in lives in
+[`bundle/buildconf.py`](bundle/buildconf.py).
+
+The build refuses rather than producing something subtly wrong. It will not
+start without the trained model, because an app that falls back to the
+geometric rule starts normally and looks fine while catching half as much. It
+will not finish if anything from the training stack got swallowed — torch
+alone is 2.8 GB, and the app needs none of it to run what torch produced.
+Afterwards it launches the built binary with its home directory pointed at an
+empty folder, so it cannot find the developer's own model, and makes it report
+which detector it would use and whether it can see everything it needs.
 
 ---
 
